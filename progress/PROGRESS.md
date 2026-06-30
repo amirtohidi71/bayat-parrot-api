@@ -1,6 +1,6 @@
 # بک‌اند بیات پروت — وضعیت پروژه
 
-آخرین به‌روزرسانی: 2026-06-29
+آخرین به‌روزرسانی: 2026-06-30
 
 ## تکنولوژی‌ها
 
@@ -83,6 +83,7 @@ Order entity فیلدهای جدید: `postalCode` (الزامی در DTO ثبت
 | POST | `/admin-panel/products` | افزودن محصول — همیشه با `status=pending` ساخته می‌شود (صرف‌نظر از مقدار ورودی) |
 | GET | `/admin-panel/products` | لیست همه‌ی محصولات (همه‌ی statusها) |
 | GET | `/admin-panel/products/pending` | فقط محصولات `pending` |
+| GET | `/admin-panel/products/:id` | جزئیات یک محصول خاص (برای صفحه ویرایش) |
 | PATCH | `/admin-panel/products/:id` | ویرایش محصول (همه‌ی فیلدها، شامل `status`) |
 | DELETE | `/admin-panel/products/:id` | حذف محصول |
 | POST | `/admin-panel/products/:id/images` | آپلود تصویر محصول (multipart، فیلد `image`)؛ حداکثر ۵مگابایت، فرمت‌های `jpg/jpeg/png/webp` |
@@ -93,10 +94,11 @@ Order entity فیلدهای جدید: `postalCode` (الزامی در DTO ثبت
 - سرو فایل‌های استاتیک با `app.useStaticAssets` در `main.ts` روی مسیر `GET /uploads/:filename`.
 - `public/uploads/*` در `.gitignore` نادیده گرفته می‌شود (فقط `.gitkeep` track می‌شود) — یعنی فایل‌های آپلودی روی هر محیط دیگر (staging/prod) از صفر شروع می‌شوند؛ برای نگه‌داری دائمی باید به storage خارجی (S3 یا مشابه) منتقل شود.
 
-### Scripts انتشار محصول
+### Scripts انتشار محصول و پشتیبان‌گیری
 - `npm run publish-all-pending` — همه‌ی محصولات `pending` را `published` می‌کند.
 - `npm run publish-product -- --id=BP30171000` — یک محصول خاص را با `sku` پیدا و `published` می‌کند.
-- هر دو از طریق `NestFactory.createApplicationContext` مستقیم به DB وصل می‌شوند (بدون نیاز به سرور بالا)، در `src/scripts/`.
+- `npm run db:backup` — از دیتابیس PostgreSQL یک فایل SQL در پوشه‌ی `backups/` می‌گیرد؛ نام فایل شامل timestamp است (مثال: `bayat_parrot_2026-06-30T14-00-00-000Z.sql`). از `pg_dump` در مسیر ثابت نصب PostgreSQL 17 روی ویندوز استفاده می‌کند (`C:\Program Files\PostgreSQL\17\bin\pg_dump.exe`)؛ اسکریپت در `src/scripts/db-backup.ts`.
+- هر سه اسکریپت از طریق `ts-node -r tsconfig-paths/register` اجرا می‌شوند.
 
 ### مستندات API
 - Swagger UI: `http://localhost:3001/api`

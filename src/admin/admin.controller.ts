@@ -64,6 +64,12 @@ export class AdminController {
     return this.adminService.getPendingProducts();
   }
 
+  @Get('products/:id')
+  @UseGuards(AdminAuthGuard)
+  getProduct(@Param('id') id: string) {
+    return this.adminService.getProduct(id);
+  }
+
   @Patch('products/:id')
   @UseGuards(AdminAuthGuard)
   updateProduct(@Param('id') id: string, @Body() updateProductDto: UpdateProductDto) {

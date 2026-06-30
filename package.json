@@ -19,7 +19,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "publish-all-pending": "ts-node -r tsconfig-paths/register src/scripts/publish-all-pending.ts",
-    "publish-product": "ts-node -r tsconfig-paths/register src/scripts/publish-product.ts"
+    "publish-product": "ts-node -r tsconfig-paths/register src/scripts/publish-product.ts",
+    "db:backup": "ts-node -r tsconfig-paths/register src/scripts/db-backup.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

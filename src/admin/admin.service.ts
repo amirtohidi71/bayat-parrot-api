@@ -70,6 +70,10 @@ export class AdminService {
     return this.productsService.findAllForAdmin();
   }
 
+  getProduct(id: string) {
+    return this.productsService.findOne(id);
+  }
+
   getPendingProducts() {
     return this.productsService.findPending();
   }
