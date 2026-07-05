@@ -1,21 +1,33 @@
 import {
   IsArray,
   IsBoolean,
+  IsDateString,
   IsEnum,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   Max,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import {
   ProductAgeStage,
   ProductCategorySlug,
   ProductGender,
   ProductStatus,
 } from '../entities/product.entity';
+
+class ProductSpecificationDto {
+  @IsString()
+  label: string;
+
+  @IsString()
+  value: string;
+}
 
 export class CreateProductDto {
   @Matches(/^BP\d+$/, { message: 'sku must match the format BP followed by digits' })
@@ -32,6 +44,17 @@ export class CreateProductDto {
   @IsString()
   shortDescription?: string;
 
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductSpecificationDto)
+  specifications?: ProductSpecificationDto[];
+
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  boughtTogetherProductIds?: string[];
+
   @IsNumber()
   @Min(0)
   price: number;
@@ -41,6 +64,11 @@ export class CreateProductDto {
   @Min(0)
   @Max(100)
   discountPercent?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  discountPrice?: number;
 
   @IsOptional()
   @IsNumber()
@@ -84,9 +112,8 @@ export class CreateProductDto {
   brand?: string;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  weight?: number;
+  @IsString()
+  weight?: string;
 
   @IsOptional()
   @IsString()
@@ -125,7 +152,27 @@ export class CreateProductDto {
   tagFastShipping?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  tagFreeShipping?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  tagCarryCage?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isAmazingOffer?: boolean;
+
+  @IsOptional()
+  @IsDateString()
+  amazingOfferEndsAt?: string;
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   images?: string[];
+
+  @IsOptional()
+  @IsString()
+  lastEditedByName?: string | null;
 }

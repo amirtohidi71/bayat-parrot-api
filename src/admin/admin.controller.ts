@@ -6,18 +6,24 @@ import {
   Param,
   Patch,
   Post,
+  Query,
+  Req,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AdminService } from './admin.service';
 import { AdminLoginDto } from './dto/admin-login.dto';
 import { UpdateOrderStatusDto } from '../orders/dto/update-order-status.dto';
 import { CreateProductDto } from '../products/dto/create-product.dto';
 import { UpdateProductDto } from '../products/dto/update-product.dto';
-import { AdminAuthGuard } from './guards/admin-auth.guard';
+import { ProductStatus } from '../products/entities/product.entity';
+import { AdminAuthGuard, AdminTokenPayload } from './guards/admin-auth.guard';
 import { productImageUploadOptions } from './config/product-image-upload.config';
+
+type AdminRequest = Request & { admin?: AdminTokenPayload };
 
 @Controller('admin-panel')
 export class AdminController {
@@ -48,20 +54,26 @@ export class AdminController {
 
   @Post('products')
   @UseGuards(AdminAuthGuard)
-  createProduct(@Body() createProductDto: CreateProductDto) {
-    return this.adminService.createProduct(createProductDto);
+  createProduct(@Body() createProductDto: CreateProductDto, @Req() request: AdminRequest) {
+    return this.adminService.createProduct(createProductDto, request.admin?.username);
   }
 
   @Get('products')
   @UseGuards(AdminAuthGuard)
-  getProducts() {
-    return this.adminService.getProducts();
+  getProducts(@Query('status') status?: ProductStatus) {
+    return this.adminService.getProducts(status);
   }
 
   @Get('products/pending')
   @UseGuards(AdminAuthGuard)
   getPendingProducts() {
     return this.adminService.getPendingProducts();
+  }
+
+  @Get('products/lookup/:identifier')
+  @UseGuards(AdminAuthGuard)
+  lookupProduct(@Param('identifier') identifier: string) {
+    return this.adminService.lookupProduct(identifier);
   }
 
   @Get('products/:id')
@@ -72,8 +84,8 @@ export class AdminController {
 
   @Patch('products/:id')
   @UseGuards(AdminAuthGuard)
-  updateProduct(@Param('id') id: string, @Body() updateProductDto: UpdateProductDto) {
-    return this.adminService.updateProduct(id, updateProductDto);
+  updateProduct(@Param('id') id: string, @Body() updateProductDto: UpdateProductDto, @Req() request: AdminRequest) {
+    return this.adminService.updateProduct(id, updateProductDto, request.admin?.username);
   }
 
   @Delete('products/:id')

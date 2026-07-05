@@ -1,6 +1,6 @@
 # بک‌اند بیات پروت — وضعیت پروژه
 
-آخرین به‌روزرسانی: 2026-06-30
+آخرین به‌روزرسانی: 2026-07-02
 
 ## تکنولوژی‌ها
 
@@ -20,7 +20,7 @@
 - اتصال از طریق متغیرهای `.env` (`DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME`)
 - در حالت توسعه `synchronize: true` فعال است (schema به‌صورت خودکار از روی entity ها ساخته/آپدیت می‌شود) — **قبل از پروداکشن باید به migration واقعی تبدیل شود.**
 - جدول‌های فعلی: `users`, `otps`, `categories`, `products`, `orders`, `order_items`
-- `products` فیلدهای زیاد و چند enum دارد (`status`, `categorySlug`, `gender`, `ageStage`) — همه‌ی ستون‌های جدید/الزامی (`sku`, `categorySlug`, ...) در سطح DB nullable نگه داشته شدند تا `synchronize` روی رکوردهای قبلی کرش نکند؛ الزامی بودن‌شان فقط در DTO (سطح اعتبارسنجی) اعمال می‌شود.
+- `products` فیلدهای زیاد و چند enum دارد (`status`, `categorySlug`, `gender`, `ageStage`) — همه‌ی ستون‌های جدید/الزامی (`sku`, `categorySlug`, ...) در سطح DB nullable نگه داشته شدند تا `synchronize` روی رکوردهای قبلی کرش نکند؛ الزامی بودن‌شان فقط در DTO (سطح اعتبارسنجی) اعمال می‌شود. مشخصات فنی محصول در فیلد `specifications` از نوع `jsonb` ذخیره می‌شود: آرایه‌ای از `{ label, value }` که برای همه دسته‌ها عمومی است.
 - `orders.orderNumber` (unique، nullable در DB به همان دلیل بالا) فرمت `BP-YYYYMMDDXXXX` بر اساس تاریخ شمسی دارد (مثال: `BP-140504070001`، بدون خط‌فاصله بین تاریخ و شمارنده)؛ شمارنده‌ی ۴ رقمی هر روز از `0001` شروع می‌شود. تولید آن در `OrdersService.saveOrderWithOrderNumber` با شمارش سفارش‌های همان روز + retry روی خطای unique-violation (کد پستگرس `23505`) انجام می‌شود تا زیر بار همزمان هم شماره‌ی تکراری ساخته نشود. سفارش‌های قدیمی‌تر از این فیچر مقدار `orderNumber = null` دارند.
 
 ## API های ساخته‌شده
@@ -57,7 +57,9 @@
 | GET | `/products/search` | جستجو (`q`) روی محصولات published + همان فیلترها |
 | GET / PATCH / DELETE | `/products/:id` | GET فقط برای published (در غیر این صورت 404) |
 
-Product entity فیلدهای کامل: `sku` (فرمت `BP\d+`), `name`, `description`, `shortDescription`, `price`, `discountPercent`, `stock`, `status` (`draft`/`pending`/`published`، پیش‌فرض `draft`), `categorySlug` (enum: `buy-parrot`/`parrot-food`/`parrot-serlak`/`parrot-supplements`/`parrot-toys`/`parrot-accessories`/`parrot-cage`), `subCategory`, `species`, `subspecies`, `gender`, `ageStage` (`serlaki`/`dane-khor`/`pish-molid`/`molid`), `colors[]`, `brand`, `weight`, `productType`, `size`, `material`, `tagPair`/`tagHandTame`/`tagCustom`/`tagLuxury`/`tagHealthGuarantee`/`tagFastShipping` (boolean), `images[]`.
+Product entity فیلدهای کامل: `sku` (فرمت `BP\d+`), `name`, `description`, `shortDescription`, `specifications[]` (`jsonb`، ساختار `{ label, value }`)، `price`, `discountPercent`, `discountPrice`, `stock`, `status` (`draft`/`pending`/`published`، پیش‌فرض `draft`), `categorySlug` (enum: `buy-parrot`/`parrot-food`/`parrot-serlak`/`parrot-supplements`/`parrot-toys`/`parrot-accessories`/`parrot-cage`), `subCategory`, `species`, `subspecies`, `gender`, `ageStage` (`serlaki`/`dane-khor`/`pish-molid`/`molid`), `colors[]`, `brand`, `weight`, `productType`, `size`, `material`, `tagPair`/`tagHandTame`/`tagCustom`/`tagLuxury`/`tagHealthGuarantee`/`tagFastShipping`/`tagFreeShipping`/`tagCarryCage` (boolean), `isAmazingOffer`, `amazingOfferEndsAt`, `images[]`.
+
+در `ProductsService` قبل از ذخیره محصول، `specifications` normalize می‌شود: ردیف‌های کاملاً خالی حذف می‌شوند و اگر چیزی باقی نماند مقدار `null` ذخیره می‌شود. این منطق برای `create` و `update` یکسان است و به دسته محصول وابسته نیست.
 
 رابطه‌ی قبلی Product↔Category (جدول `categories`) حذف شد و جایش `categorySlug` (enum ثابت) نشست؛ ماژول `categories` مستقل باقی مانده ولی دیگر به محصولات وصل نیست.
 

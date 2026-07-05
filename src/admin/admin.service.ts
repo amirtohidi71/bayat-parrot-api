@@ -62,24 +62,35 @@ export class AdminService {
     return this.ordersService.getSalesReport();
   }
 
-  createProduct(createProductDto: CreateProductDto) {
-    return this.productsService.create({ ...createProductDto, status: ProductStatus.PENDING });
+  createProduct(createProductDto: CreateProductDto, adminName?: string) {
+    return this.productsService.create({
+      ...createProductDto,
+      status: ProductStatus.PENDING,
+      lastEditedByName: adminName ?? null,
+    });
   }
 
-  getProducts() {
-    return this.productsService.findAllForAdmin();
+  getProducts(status?: ProductStatus) {
+    return this.productsService.findAllForAdmin(status);
   }
 
   getProduct(id: string) {
-    return this.productsService.findOne(id);
+    return this.productsService.findOneForAdmin(id);
+  }
+
+  lookupProduct(identifier: string) {
+    return this.productsService.findOneByIdOrSku(identifier);
   }
 
   getPendingProducts() {
     return this.productsService.findPending();
   }
 
-  updateProduct(id: string, updateProductDto: UpdateProductDto) {
-    return this.productsService.update(id, updateProductDto);
+  updateProduct(id: string, updateProductDto: UpdateProductDto, adminName?: string) {
+    return this.productsService.update(id, {
+      ...updateProductDto,
+      lastEditedByName: adminName ?? null,
+    });
   }
 
   removeProduct(id: string) {

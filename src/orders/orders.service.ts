@@ -1,12 +1,12 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Like, QueryFailedError, Repository } from 'typeorm';
+import { DataSource, Like, QueryFailedError, Repository } from 'typeorm';
 import moment = require('moment-jalaali');
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
-import { ProductsService } from '../products/products.service';
+import { Product } from '../products/entities/product.entity';
 import { UserRole } from '../users/entities/user.entity';
 import { SmsService } from '../common/sms/sms.service';
 
@@ -34,33 +34,57 @@ export class OrdersService {
     private readonly ordersRepository: Repository<Order>,
     @InjectRepository(OrderItem)
     private readonly orderItemsRepository: Repository<OrderItem>,
-    private readonly productsService: ProductsService,
     private readonly smsService: SmsService,
+    private readonly dataSource: DataSource,
   ) {}
 
   async create(userId: string, phone: string, createOrderDto: CreateOrderDto): Promise<Order> {
-    const lines: { productId: string; quantity: number; price: number }[] = [];
-    let total = 0;
+    const order = await this.dataSource.transaction(async (manager) => {
+      const productRepository = manager.getRepository(Product);
+      const orderRepository = manager.getRepository(Order);
+      const orderItemRepository = manager.getRepository(OrderItem);
+      const lines: { productId: string; quantity: number; price: number }[] = [];
+      let total = 0;
 
-    for (const { productId, quantity } of createOrderDto.items) {
-      const product = await this.productsService.findOne(productId);
-      const price = Number(product.price);
-      total += price * quantity;
-      lines.push({ productId, quantity, price });
-    }
+      for (const { productId, quantity } of createOrderDto.items) {
+        const product = await productRepository
+          .createQueryBuilder('product')
+          .setLock('pessimistic_write')
+          .where('product.id = :productId', { productId })
+          .getOne();
 
-    const order = await this.saveOrderWithOrderNumber(
-      userId,
-      total,
-      createOrderDto.address,
-      createOrderDto.postalCode,
-    );
+        if (!product) {
+          throw new NotFoundException(`Product with id ${productId} not found`);
+        }
+        if (quantity <= 0) {
+          throw new BadRequestException('Order item quantity must be greater than zero');
+        }
+        if (product.stock < quantity) {
+          throw new BadRequestException(`Insufficient stock for product ${product.name}`);
+        }
 
-    const items = await this.orderItemsRepository.save(
-      lines.map((line) => this.orderItemsRepository.create({ ...line, orderId: order.id })),
-    );
+        const price = Number(product.discountPrice ?? product.price);
+        total += price * quantity;
+        lines.push({ productId, quantity, price });
+        product.stock -= quantity;
+        await productRepository.save(product);
+      }
 
-    order.items = items;
+      const savedOrder = await this.saveOrderWithOrderNumber(
+        userId,
+        total,
+        createOrderDto.address,
+        createOrderDto.postalCode,
+        orderRepository,
+      );
+
+      const items = await orderItemRepository.save(
+        lines.map((line) => orderItemRepository.create({ ...line, orderId: savedOrder.id })),
+      );
+
+      savedOrder.items = items;
+      return savedOrder;
+    });
 
     await this.smsService.send(
       phone,
@@ -75,18 +99,19 @@ export class OrdersService {
     total: number,
     address: string,
     postalCode: string,
+    orderRepository = this.ordersRepository,
   ): Promise<Order> {
     const datePrefix = `${ORDER_NUMBER_PREFIX}-${moment().format('jYYYYjMMjDD')}`;
 
     for (let attempt = 1; attempt <= MAX_ORDER_NUMBER_ATTEMPTS; attempt++) {
-      const countToday = await this.ordersRepository.count({
+      const countToday = await orderRepository.count({
         where: { orderNumber: Like(`${datePrefix}%`) },
       });
       const orderNumber = `${datePrefix}${(countToday + 1).toString().padStart(4, '0')}`;
 
       try {
-        return await this.ordersRepository.save(
-          this.ordersRepository.create({ userId, total, address, postalCode, orderNumber }),
+        return await orderRepository.save(
+          orderRepository.create({ userId, total, address, postalCode, orderNumber }),
         );
       } catch (error) {
         const isUniqueViolation =

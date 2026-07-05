@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsEnum, IsIn, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsBoolean, IsEnum, IsIn, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { ProductAgeStage, ProductCategorySlug, ProductGender } from '../entities/product.entity';
 
 export enum ProductSortBy {
@@ -28,6 +28,22 @@ export class FindProductsDto {
 
   @IsOptional()
   @IsString()
+  age?: string;
+
+  @IsOptional()
+  @IsString()
+  subCategory?: string;
+
+  @IsOptional()
+  @IsString()
+  discount?: string;
+
+  @IsOptional()
+  @IsString()
+  inStock?: string;
+
+  @IsOptional()
+  @IsString()
   color?: string;
 
   @IsOptional()
@@ -45,6 +61,11 @@ export class FindProductsDto {
   @IsOptional()
   @IsIn(Object.values(ProductSortBy))
   sort?: ProductSortBy;
+
+  @IsOptional()
+  @IsBoolean()
+  @Type(() => Boolean)
+  amazingOffer?: boolean;
 
   @IsOptional()
   @Type(() => Number)

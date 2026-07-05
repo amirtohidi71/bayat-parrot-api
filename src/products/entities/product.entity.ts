@@ -1,6 +1,7 @@
 import {
   Column,
   CreateDateColumn,
+  DeleteDateColumn,
   Entity,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
@@ -35,6 +36,11 @@ export enum ProductAgeStage {
   MOLID = 'molid',
 }
 
+export type ProductSpecification = {
+  label: string;
+  value: string;
+};
+
 @Entity('products')
 export class Product {
   @PrimaryGeneratedColumn('uuid')
@@ -54,11 +60,23 @@ export class Product {
   @Column({ nullable: true })
   shortDescription: string;
 
-  @Column('decimal', { precision: 10, scale: 2 })
+  @Column({ type: 'jsonb', nullable: true })
+  specifications: ProductSpecification[] | null;
+
+  @Column('uuid', { array: true, default: () => "'{}'" })
+  boughtTogetherProductIds: string[];
+
+  @Column({ type: 'varchar', nullable: true })
+  lastEditedByName: string | null;
+
+  @Column('decimal', { precision: 15, scale: 2 })
   price: number;
 
   @Column({ nullable: true })
   discountPercent: number;
+
+  @Column('decimal', { precision: 15, scale: 2, nullable: true })
+  discountPrice: number;
 
   @Column({ default: 0 })
   stock: number;
@@ -91,7 +109,7 @@ export class Product {
   brand: string;
 
   @Column({ nullable: true })
-  weight: number;
+  weight: string;
 
   @Column({ nullable: true })
   productType: string;
@@ -120,6 +138,18 @@ export class Product {
   @Column({ default: false })
   tagFastShipping: boolean;
 
+  @Column({ default: false })
+  tagFreeShipping: boolean;
+
+  @Column({ default: false })
+  tagCarryCage: boolean;
+
+  @Column({ default: false })
+  isAmazingOffer: boolean;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  amazingOfferEndsAt: Date;
+
   @Column('text', { array: true, nullable: true })
   images: string[];
 
@@ -128,4 +158,7 @@ export class Product {
 
   @UpdateDateColumn()
   updatedAt: Date;
+
+  @DeleteDateColumn({ nullable: true })
+  deletedAt: Date;
 }
