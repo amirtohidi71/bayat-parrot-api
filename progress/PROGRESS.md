@@ -1,6 +1,6 @@
 # بک‌اند بیات پروت — وضعیت پروژه
 
-آخرین به‌روزرسانی: 2026-07-02
+آخرین به‌روزرسانی: 2026-07-05
 
 ## تکنولوژی‌ها
 
@@ -55,11 +55,17 @@
 | POST | `/products` | ایجاد محصول (مسیر عمومی قدیمی، بدون guard — مدیریت رسمی محصولات از طریق Admin Panel است) |
 | GET | `/products` | لیست published با فیلتر (`category` به‌جای categorySlug, `species`, `gender`, `ageStage`, `color`, `minPrice`, `maxPrice`, `sort`) + pagination (`page`, `limit`) |
 | GET | `/products/search` | جستجو (`q`) روی محصولات published + همان فیلترها |
-| GET / PATCH / DELETE | `/products/:id` | GET فقط برای published (در غیر این صورت 404) |
+| GET / PATCH / DELETE | `/products/:id` | GET فقط برای published؛ `:id` می‌تواند UUID داخلی یا `sku` باشد (`findOne` با regex تشخیص می‌دهد کدام است) — قبلاً فقط UUID قبول می‌شد و لینک‌های فرانت با sku ۴۰۴ می‌گرفتند (در غیر این صورت 404) |
 
 Product entity فیلدهای کامل: `sku` (فرمت `BP\d+`), `name`, `description`, `shortDescription`, `specifications[]` (`jsonb`، ساختار `{ label, value }`)، `price`, `discountPercent`, `discountPrice`, `stock`, `status` (`draft`/`pending`/`published`، پیش‌فرض `draft`), `categorySlug` (enum: `buy-parrot`/`parrot-food`/`parrot-serlak`/`parrot-supplements`/`parrot-toys`/`parrot-accessories`/`parrot-cage`), `subCategory`, `species`, `subspecies`, `gender`, `ageStage` (`serlaki`/`dane-khor`/`pish-molid`/`molid`), `colors[]`, `brand`, `weight`, `productType`, `size`, `material`, `tagPair`/`tagHandTame`/`tagCustom`/`tagLuxury`/`tagHealthGuarantee`/`tagFastShipping`/`tagFreeShipping`/`tagCarryCage` (boolean), `isAmazingOffer`, `amazingOfferEndsAt`, `images[]`.
 
+**جستجوی کلمه‌به‌کلمه:** `GET /products/search` (و فیلتر عمومی) هر کلمه از عبارت جستجو را جداگانه با `ILIKE` روی `name`/`description` چک می‌کند (نه کل عبارت به‌صورت یک رشته‌ی پیوسته) — یعنی جستجوی «غذای طوطی آرا» بدون کلمه‌ی «مخصوص» هم محصول «غذای مخصوص طوطی آرا» را پیدا می‌کند.
+
+**`lastEditedByName`:** فیلد اختیاری روی `Product` که نام آخرین ادمین ویرایش‌کننده را نگه می‌دارد؛ به `CreateProductDto`/`UpdateProductDto` اضافه شد.
+
 در `ProductsService` قبل از ذخیره محصول، `specifications` normalize می‌شود: ردیف‌های کاملاً خالی حذف می‌شوند و اگر چیزی باقی نماند مقدار `null` ذخیره می‌شود. این منطق برای `create` و `update` یکسان است و به دسته محصول وابسته نیست.
+
+**Regression check 2026-07-05:** مسیر عمومی محصول در فرانت با SKU canonical شد؛ بک‌اند همچنان `GET /products/:id` را با UUID و SKU پشتیبانی می‌کند. نمونه محصول واقعی `BP140504100001` با `categorySlug=buy-parrot`، `species=african-grey`، `status=published`، `discountPrice=115000000` و `specifications` واقعی تست شد. موجودی در ثبت سفارش داخل transaction با lock بدبینانه کم می‌شود و در صورت کمبود موجودی خطا می‌دهد.
 
 رابطه‌ی قبلی Product↔Category (جدول `categories`) حذف شد و جایش `categorySlug` (enum ثابت) نشست؛ ماژول `categories` مستقل باقی مانده ولی دیگر به محصولات وصل نیست.
 
@@ -83,8 +89,9 @@ Order entity فیلدهای جدید: `postalCode` (الزامی در DTO ثبت
 | PATCH | `/admin-panel/orders/:id/status` | تغییر وضعیت سفارش |
 | GET | `/admin-panel/sales` | گزارش فروش: تعداد سفارش، مبلغ کل، تفکیک بر اساس محصول |
 | POST | `/admin-panel/products` | افزودن محصول — همیشه با `status=pending` ساخته می‌شود (صرف‌نظر از مقدار ورودی) |
-| GET | `/admin-panel/products` | لیست همه‌ی محصولات (همه‌ی statusها) |
+| GET | `/admin-panel/products` | لیست همه‌ی محصولات؛ پارامتر اختیاری `status` برای فیلتر (`draft`/`pending`/`published`) |
 | GET | `/admin-panel/products/pending` | فقط محصولات `pending` |
+| GET | `/admin-panel/products/lookup/:identifier` | پیدا کردن محصول با UUID یا sku (`findOneByIdOrSku`) — برای صفحه ویرایش وقتی فقط sku در دسترس است |
 | GET | `/admin-panel/products/:id` | جزئیات یک محصول خاص (برای صفحه ویرایش) |
 | PATCH | `/admin-panel/products/:id` | ویرایش محصول (همه‌ی فیلدها، شامل `status`) |
 | DELETE | `/admin-panel/products/:id` | حذف محصول |
@@ -99,8 +106,9 @@ Order entity فیلدهای جدید: `postalCode` (الزامی در DTO ثبت
 ### Scripts انتشار محصول و پشتیبان‌گیری
 - `npm run publish-all-pending` — همه‌ی محصولات `pending` را `published` می‌کند.
 - `npm run publish-product -- --id=BP30171000` — یک محصول خاص را با `sku` پیدا و `published` می‌کند.
-- `npm run db:backup` — از دیتابیس PostgreSQL یک فایل SQL در پوشه‌ی `backups/` می‌گیرد؛ نام فایل شامل timestamp است (مثال: `bayat_parrot_2026-06-30T14-00-00-000Z.sql`). از `pg_dump` در مسیر ثابت نصب PostgreSQL 17 روی ویندوز استفاده می‌کند (`C:\Program Files\PostgreSQL\17\bin\pg_dump.exe`)؛ اسکریپت در `src/scripts/db-backup.ts`.
-- هر سه اسکریپت از طریق `ts-node -r tsconfig-paths/register` اجرا می‌شوند.
+- `npm run db:backup` — از دیتابیس PostgreSQL یک فایل SQL در پوشه‌ی `backups/` می‌گیرد؛ نام فایل شامل timestamp است (مثال: `bayat_parrot_2026-06-30T14-00-00-000Z.sql`). از `pg_dump` در مسیر ثابت نصب PostgreSQL 17 روی ویندوز استفاده می‌کند (`C:\Program Files\PostgreSQL\17\bin\pg_dump.exe`)؛ اسکریپت در `src/scripts/db-backup.ts`. `backups/` در `.gitignore` است، این فایل‌ها روی گیت‌هاب پوش نمی‌شوند — باید جداگانه (مثلاً گوگل‌درایو) نگه‌داری شوند.
+- `src/scripts/list-products.ts` — اسکریپت کمکی جدید: همه‌ی محصولات را با `id`/`name`/`status`/`categorySlug`/`species` در ترمینال چاپ می‌کند؛ برای دیباگ سریع بدون نیاز به کوئری مستقیم دیتابیس.
+- هر اسکریپت از طریق `ts-node -r tsconfig-paths/register` اجرا می‌شود.
 
 ### مستندات API
 - Swagger UI: `http://localhost:3001/api`
@@ -109,7 +117,7 @@ Order entity فیلدهای جدید: `postalCode` (الزامی در DTO ثبت
 ## چیزهایی که مونده
 
 - **SMS واقعی:** `SmsService` (`src/common/sms/sms.service.ts`) فعلاً فقط لاگ می‌کند؛ باید به یک provider واقعی (مثل Kavenegar یا sms.ir) وصل شود — هم برای OTP و هم برای تایید سفارش.
-- **اتصال به فرانت:** هنوز هیچ فرانت‌اندی به این بک‌اند وصل نشده.
+- **اتصال به فرانت:** فرانت به این بک‌اند وصل شده و در محیط توسعه محلی کار می‌کند؛ دیپلوی روی هاست ابری (آروان‌کلود) هنوز انجام نشده.
 - **Migration واقعی TypeORM:** الان `synchronize: true` است؛ قبل از پروداکشن باید migration نوشته و سوییچ شود.
 - **تست خودکار:** اسکلت Jest وجود دارد ولی برای فیچرهای جدید (auth/orders/admin/products) تستی نوشته نشده.
 - **Rate limiting روی OTP:** الان محدودیتی روی تعداد درخواست send-otp برای یک شماره وجود ندارد.
@@ -119,8 +127,9 @@ Order entity فیلدهای جدید: `postalCode` (الزامی در DTO ثبت
 - **آپلود تصویر محصول روی دیسک محلی است:** `POST /admin-panel/products/:id/images` کار می‌کند (multer + استاتیک سرو از `public/uploads`)، اما روی هاست‌های ephemeral (مثل اکثر PaaS ها) فایل‌ها با هر دیپلوی از بین می‌روند. قبل از پروداکشن باید به storage خارجی (S3 یا مشابه) منتقل شود.
 - **مسیر عمومی `POST/PATCH/DELETE /products` بدون guard است:** از قبل بدون محافظت بود؛ حالا که گردش‌کار تأیید ادمین (`pending` → `published`) اضافه شده، این مسیر می‌تواند مستقیماً محصول با `status=published` بسازد و گردش‌کار تأیید را دور بزند. باید قبل از پروداکشن گارد بشود یا حذف شود (مدیریت رسمی محصولات الان از طریق `/admin-panel/products` انجام می‌شود).
 - **پسوردهای ادمین پلین‌تکست در `.env` هستند:** الان قوی و رندوم‌اند (نه دیگه برابر نام‌کاربری)، ولی هنوز هش نشده‌اند و در فایل env ساده ذخیره می‌شوند — قابل‌قبول برای dev، ولی برای پروداکشن بهتره هش (bcrypt) بشن یا به یک identity provider واقعی منتقل شوند.
+- **دیپلوی روی آروان‌کلود:** هنوز انجام نشده — دامنه خریداری شده ولی هنوز NS به آروان تغییر نکرده؛ حساب آروان‌کلود ساخته شده.
 
 ## نکات شناخته‌شده محیط dev (ویندوز)
 
-- **`npm run start:dev` گاهی پروسه‌ی قدیمی خودش رو کامل kill نمی‌کند:** روی ویندوز، وقتی `nest start --watch` بعد از تغییر فایل می‌خواد ری‌استارت کنه، گاهی `taskkill` پروسه‌ی قبلی رو واقعاً نمی‌بندد (خطای `ERROR: The process "X" not found`) و کل دستور با `EADDRINUSE` روی پورت ۳۰۰۱ کرش می‌کند، درحالی‌که پروسه‌ی قبلی (orphan) همچنان زنده می‌ماند و به درخواست‌ها با **کد قدیمی** پاسخ می‌دهد. اگه رفتار سرور با کد فعلی همخوانی نداشت یا غیرمنتظره بود، اول چک کن چند پروسه‌ی `node` مرتبط با `bayat-parrot-api` زنده‌ست (`Get-CimInstance Win32_Process -Filter "Name='node.exe'"`) — اگه بیشتر از یک جفت (`nest.js start --watch` + `dist/main`) بود، باید orphan ها رو بست و `npm run start:dev` رو تازه بالا آورد.
+- **`npm run start:dev` گاهی پروسه‌ی قدیمی خودش رو کامل kill نمی‌کند:** روی ویندوز، وقتی `nest start --watch` بعد از تغییر فایل می‌خواد ری‌استارت کنه، گاهی `taskkill` پروسه‌ی قبلی رو واقعاً نمی‌بندد (خطای `ERROR: The process "X" not found`) و کل دستور با `EADDRINUSE` روی پورت ۳۰۰۱ کرش می‌کند، درحالی‌که پروسه‌ی قبلی (orphan) همچنان زنده می‌ماند و به درخواست‌ها با **کد قدیمی** پاسخ می‌دهد. اگه رفتار سرور با کد فعلی همخوانی نداشت یا غیرمنتظره بود، اول چک کن چند پروسه‌ی `node` مرتبط با `bayat-parrot-api` زنده‌ست (`Get-CimInstance Win32_Process -Filter "Name='node.exe'"`) — اگه بیشتر از یک جفت (`nest.js start --watch` + `dist/main`) بود، باید orphan ها رو بست و `npm run start:dev` رو تازه بالا آورد. **راه سریع‌تر:** `netstat -ano | findstr :3001` → `taskkill /PID <عدد> /F` → دوباره `npm run start:dev`.
 - **تغییر `.env` هیچ‌وقت hot-reload رو trigger نمی‌کنه:** `nest start --watch` فقط فایل‌های `.ts` رو واچ می‌کنه، نه `.env`. بعد از هر تغییر در `.env` (مثل اضافه‌کردن `ADMIN_USERS`) باید پروسه‌ی dev server رو کامل kill کرد و دوباره `npm run start:dev` زد، وگرنه مقدار قدیمی env همچنان در حافظه‌ی پروسه می‌مونه و رفتار سرور با `.env` فعلی هم‌خوانی نداره.
