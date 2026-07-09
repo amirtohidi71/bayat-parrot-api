@@ -45,6 +45,12 @@ export class Order {
   @Column({ nullable: true })
   address: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  recipientName: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  recipientMobile: string | null;
+
   @Column({ nullable: true })
   postalCode: string;
 
@@ -54,7 +60,7 @@ export class Order {
   @Column({ nullable: true })
   paymentDate: Date;
 
-  // Format: BP-YYYYMMDDXXXX (Jalaali date), e.g. BP-140504070001.
+  // Format: 8-digit numeric string, e.g. 87653221.
   // Nullable at the DB level so synchronize doesn't choke on pre-existing rows.
   @Column({ unique: true, nullable: true })
   orderNumber: string;

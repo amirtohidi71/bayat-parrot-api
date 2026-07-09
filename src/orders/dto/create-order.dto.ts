@@ -4,6 +4,7 @@ import {
   IsArray,
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsString,
   IsUUID,
   Min,
@@ -11,8 +12,21 @@ import {
 } from 'class-validator';
 
 export class CreateOrderItemDto {
+  @IsOptional()
   @IsUUID()
-  productId: string;
+  productId?: string;
+
+  @IsOptional()
+  @IsString()
+  sku?: string;
+
+  @IsOptional()
+  @IsString()
+  colorCode?: string;
+
+  @IsOptional()
+  @IsString()
+  colorName?: string;
 
   @IsNumber()
   @Min(1)
@@ -29,6 +43,14 @@ export class CreateOrderDto {
   @IsNotEmpty()
   @IsString()
   address: string;
+
+  @IsOptional()
+  @IsString()
+  recipientName?: string;
+
+  @IsOptional()
+  @IsString()
+  recipientMobile?: string;
 
   @IsNotEmpty()
   @IsString()

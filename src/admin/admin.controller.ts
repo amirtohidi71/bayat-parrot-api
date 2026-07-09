@@ -40,6 +40,12 @@ export class AdminController {
     return this.adminService.getOrders();
   }
 
+  @Get('dashboard')
+  @UseGuards(AdminAuthGuard)
+  getDashboardSummary() {
+    return this.adminService.getDashboardSummary();
+  }
+
   @Patch('orders/:id/status')
   @UseGuards(AdminAuthGuard)
   updateOrderStatus(@Param('id') id: string, @Body() updateOrderStatusDto: UpdateOrderStatusDto) {

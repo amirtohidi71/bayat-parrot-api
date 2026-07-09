@@ -54,6 +54,10 @@ export class AdminService {
     }));
   }
 
+  getDashboardSummary() {
+    return this.ordersService.getAdminDashboardSummary();
+  }
+
   updateOrderStatus(id: string, updateOrderStatusDto: UpdateOrderStatusDto) {
     return this.ordersService.updateStatus(id, updateOrderStatusDto);
   }

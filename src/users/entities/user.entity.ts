@@ -28,6 +28,9 @@ export class User {
   @Column({ nullable: true, unique: true })
   email: string;
 
+  @Column({ nullable: true })
+  nationalId: string;
+
   @Column({ default: false })
   profileCompleted: boolean;
 

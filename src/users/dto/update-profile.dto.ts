@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsString } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Matches } from 'class-validator';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -12,4 +12,9 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsEmail()
   email?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{10}$/, { message: 'nationalId must be exactly 10 digits' })
+  nationalId?: string;
 }
