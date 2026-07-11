@@ -2,7 +2,9 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Product, ProductStatus } from './entities/product.entity';
+import { ProductReview, ProductReviewStatus } from './entities/product-review.entity';
 import { CreateProductDto } from './dto/create-product.dto';
+import { CreateProductReviewDto } from './dto/create-product-review.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { FindProductsDto, ProductSortBy } from './dto/find-products.dto';
 import { SearchProductsDto } from './dto/search-products.dto';
@@ -14,6 +16,39 @@ export interface PaginatedProducts {
   limit: number;
 }
 
+export type ProductReviewResponse = {
+  id: string;
+  text: string;
+  rating: number;
+  createdAt: Date;
+  reviewerName: string | null;
+};
+
+export type ProductReviewsResponse = {
+  items: ProductReviewResponse[];
+  averageRating: number | null;
+  reviewCount: number;
+};
+
+export type AdminProductReviewResponse = {
+  id: string;
+  product: {
+    id: string;
+    name: string;
+    sku?: string | null;
+  };
+  user: {
+    id: string;
+    name: string | null;
+    phone: string | null;
+  };
+  text: string;
+  rating: number;
+  showName: boolean;
+  status: ProductReviewStatus;
+  createdAt: Date;
+};
+
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type ProductEditorPayload = { lastEditedByName?: string | null };
 export type ProductWithBoughtTogether = Product & { boughtTogetherProducts: Product[] };
@@ -23,12 +58,18 @@ export class ProductsService {
   constructor(
     @InjectRepository(Product)
     private readonly productsRepository: Repository<Product>,
+    @InjectRepository(ProductReview)
+    private readonly productReviewsRepository: Repository<ProductReview>,
   ) {}
 
   async create(createProductDto: CreateProductDto & ProductEditorPayload): Promise<Product> {
+    const colorVariants = this.normalizeColorVariants(createProductDto.colorVariants);
     const payload = {
       ...createProductDto,
       specifications: this.normalizeSpecifications(createProductDto.specifications),
+      colorVariants,
+      stock: colorVariants ? this.sumColorVariantStock(colorVariants) : Number(createProductDto.stock ?? 0),
+      colors: colorVariants ? colorVariants.map((variant) => variant.colorCode).filter((color): color is string => Boolean(color)) : createProductDto.colors,
       boughtTogetherProductIds: await this.normalizeBoughtTogetherIds(createProductDto.boughtTogetherProductIds),
     };
     this.validateAmazingOfferEnd(payload);
@@ -195,12 +236,104 @@ export class ProductsService {
     return Object.assign(product, { boughtTogetherProducts });
   }
 
+  async submitReview(productId: string, userId: string, createReviewDto: CreateProductReviewDto): Promise<ProductReview> {
+    const product = await this.findOnePublished(productId);
+    const existingReview = await this.productReviewsRepository.findOne({
+      where: { productId: product.id, userId },
+    });
+
+    const review = existingReview ?? this.productReviewsRepository.create({ productId: product.id, userId });
+    review.text = createReviewDto.text.trim();
+    review.rating = createReviewDto.rating;
+    review.showName = createReviewDto.showName ?? true;
+    review.status = ProductReviewStatus.PENDING;
+    review.reviewedAt = null;
+    review.reviewedById = null;
+
+    return this.productReviewsRepository.save(review);
+  }
+
+  async findApprovedReviews(productId: string): Promise<ProductReviewsResponse> {
+    const product = await this.findOnePublished(productId);
+    const reviews = await this.productReviewsRepository.find({
+      where: { productId: product.id, status: ProductReviewStatus.APPROVED },
+      relations: { user: true },
+      order: { createdAt: 'DESC' },
+    });
+    const reviewCount = reviews.length;
+    const averageRating = reviewCount > 0
+      ? Number((reviews.reduce((sum, review) => sum + review.rating, 0) / reviewCount).toFixed(1))
+      : null;
+
+    return {
+      items: reviews.map((review) => ({
+        id: review.id,
+        text: review.text,
+        rating: review.rating,
+        createdAt: review.createdAt,
+        reviewerName: review.showName ? this.formatReviewerName(review.user) : null,
+      })),
+      averageRating,
+      reviewCount,
+    };
+  }
+
+  async findReviewsForAdmin(status?: ProductReviewStatus | string): Promise<AdminProductReviewResponse[]> {
+    const normalizedStatus = Object.values(ProductReviewStatus).includes(status as ProductReviewStatus)
+      ? (status as ProductReviewStatus)
+      : ProductReviewStatus.PENDING;
+
+    const reviews = await this.productReviewsRepository.find({
+      where: { status: normalizedStatus },
+      relations: { product: true, user: true },
+      order: { createdAt: 'DESC' },
+    });
+
+    return reviews.map((review) => this.toAdminReviewResponse(review));
+  }
+
+  async updateReviewStatusForAdmin(
+    id: string,
+    status: ProductReviewStatus.APPROVED | ProductReviewStatus.REJECTED,
+    reviewedById: string,
+  ): Promise<AdminProductReviewResponse> {
+    if (![ProductReviewStatus.APPROVED, ProductReviewStatus.REJECTED].includes(status)) {
+      throw new BadRequestException('Invalid review status');
+    }
+
+    const review = await this.productReviewsRepository.findOne({
+      where: { id },
+      relations: { product: true, user: true },
+    });
+    if (!review) {
+      throw new NotFoundException(`Review with id ${id} not found`);
+    }
+
+    review.status = status;
+    review.reviewedAt = new Date();
+    review.reviewedById = reviewedById;
+
+    return this.toAdminReviewResponse(await this.productReviewsRepository.save(review));
+  }
+
   async update(id: string, updateProductDto: UpdateProductDto & ProductEditorPayload): Promise<Product> {
     const product = await this.findOne(id);
+    const colorVariants = updateProductDto.colorVariants !== undefined
+      ? this.normalizeColorVariants(updateProductDto.colorVariants)
+      : undefined;
     const payload = {
       ...updateProductDto,
       ...(updateProductDto.specifications !== undefined
         ? { specifications: this.normalizeSpecifications(updateProductDto.specifications) }
+        : {}),
+      ...(colorVariants !== undefined
+        ? {
+            colorVariants,
+            stock: colorVariants ? this.sumColorVariantStock(colorVariants) : Number(updateProductDto.stock ?? 0),
+            colors: colorVariants
+              ? colorVariants.map((variant) => variant.colorCode).filter((color): color is string => Boolean(color))
+              : updateProductDto.colors,
+          }
         : {}),
       ...(updateProductDto.boughtTogetherProductIds !== undefined
         ? {
@@ -214,6 +347,28 @@ export class ProductsService {
     this.validateAmazingOfferEnd({ ...product, ...payload });
     Object.assign(product, payload);
     return this.productsRepository.save(product);
+  }
+
+  private normalizeColorVariants(
+    variants?: { colorName?: string; colorCode?: string; stock?: number }[] | null,
+  ): { colorName: string; colorCode?: string; stock: number }[] | null {
+    if (!Array.isArray(variants)) {
+      return null;
+    }
+
+    const normalized = variants
+      .map((variant) => ({
+        colorName: String(variant?.colorName ?? '').trim(),
+        colorCode: String(variant?.colorCode ?? '').trim() || undefined,
+        stock: Math.max(0, Number(variant?.stock ?? 0) || 0),
+      }))
+      .filter((variant) => variant.colorName !== '' || variant.colorCode || variant.stock > 0);
+
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private sumColorVariantStock(variants: { stock: number }[]): number {
+    return variants.reduce((total, variant) => total + Math.max(0, Number(variant.stock) || 0), 0);
   }
 
   private normalizeSpecifications(
@@ -304,6 +459,38 @@ export class ProductsService {
     if (endsAt.getTime() <= Date.now()) {
       throw new BadRequestException('Amazing offer end time must be in the future');
     }
+  }
+
+  private formatReviewerName(user?: { firstName?: string | null; lastName?: string | null; phone?: string | null }): string | null {
+    if (!user) {
+      return null;
+    }
+    const fullName = [user.firstName, user.lastName]
+      .map((part) => part?.trim())
+      .filter(Boolean)
+      .join(' ');
+    return fullName || user.phone || null;
+  }
+
+  private toAdminReviewResponse(review: ProductReview): AdminProductReviewResponse {
+    return {
+      id: review.id,
+      product: {
+        id: review.productId,
+        name: review.product?.name ?? '',
+        sku: review.product?.sku ?? null,
+      },
+      user: {
+        id: review.userId,
+        name: this.formatReviewerName(review.user),
+        phone: review.user?.phone ?? null,
+      },
+      text: review.text,
+      rating: review.rating,
+      showName: review.showName,
+      status: review.status,
+      createdAt: review.createdAt,
+    };
   }
 
   async remove(id: string): Promise<void> {

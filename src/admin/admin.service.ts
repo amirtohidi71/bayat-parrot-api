@@ -1,15 +1,20 @@
 import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { InjectRepository } from '@nestjs/typeorm';
 import moment = require('moment-jalaali');
+import { Repository } from 'typeorm';
 import { OrdersService } from '../orders/orders.service';
 import { ProductsService } from '../products/products.service';
 import { ProductStatus } from '../products/entities/product.entity';
+import { ProductReviewStatus } from '../products/entities/product-review.entity';
 import { AdminLoginDto } from './dto/admin-login.dto';
 import { CreateProductDto } from '../products/dto/create-product.dto';
 import { UpdateProductDto } from '../products/dto/update-product.dto';
+import { UpdateProductReviewStatusDto } from '../products/dto/update-product-review-status.dto';
 import { UpdateOrderStatusDto } from '../orders/dto/update-order-status.dto';
 import { ADMIN_PANEL_SCOPE } from './guards/admin-auth.guard';
+import { User, UserRole } from '../users/entities/user.entity';
 
 @Injectable()
 export class AdminService {
@@ -18,6 +23,8 @@ export class AdminService {
     private readonly jwtService: JwtService,
     private readonly ordersService: OrdersService,
     private readonly productsService: ProductsService,
+    @InjectRepository(User)
+    private readonly usersRepository: Repository<User>,
   ) {}
 
   login({ username, password }: AdminLoginDto) {
@@ -106,5 +113,33 @@ export class AdminService {
       throw new BadRequestException('No image file provided');
     }
     return this.productsService.addImage(id, `/uploads/${file.filename}`);
+  }
+
+  getReviews(status?: ProductReviewStatus) {
+    return this.productsService.findReviewsForAdmin(status);
+  }
+
+  async updateReviewStatus(id: string, updateReviewStatusDto: UpdateProductReviewStatusDto, adminName?: string) {
+    const reviewer = await this.findOrCreateAdminReviewer(adminName);
+    return this.productsService.updateReviewStatusForAdmin(id, updateReviewStatusDto.status, reviewer.id);
+  }
+
+  private async findOrCreateAdminReviewer(adminName?: string): Promise<User> {
+    const phone = adminName?.trim();
+    if (!phone) {
+      throw new UnauthorizedException('Invalid admin token');
+    }
+
+    const existingUser = await this.usersRepository.findOne({ where: { phone } });
+    if (existingUser) {
+      return existingUser;
+    }
+
+    return this.usersRepository.save(this.usersRepository.create({
+      phone,
+      firstName: phone,
+      role: UserRole.ADMIN,
+      profileCompleted: true,
+    }));
   }
 }

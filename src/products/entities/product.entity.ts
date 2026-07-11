@@ -3,9 +3,11 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   Entity,
+  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { ProductReview } from './product-review.entity';
 
 export enum ProductStatus {
   DRAFT = 'draft',
@@ -39,6 +41,12 @@ export enum ProductAgeStage {
 export type ProductSpecification = {
   label: string;
   value: string;
+};
+
+export type ProductColorVariant = {
+  colorName: string;
+  colorCode?: string;
+  stock: number;
 };
 
 @Entity('products')
@@ -80,6 +88,9 @@ export class Product {
 
   @Column({ default: 0 })
   stock: number;
+
+  @Column({ type: 'jsonb', nullable: true })
+  colorVariants: ProductColorVariant[] | null;
 
   @Column({ type: 'enum', enum: ProductStatus, default: ProductStatus.DRAFT })
   status: ProductStatus;
@@ -161,4 +172,7 @@ export class Product {
 
   @DeleteDateColumn({ nullable: true })
   deletedAt: Date;
+
+  @OneToMany(() => ProductReview, (review) => review.product)
+  reviews: ProductReview[];
 }

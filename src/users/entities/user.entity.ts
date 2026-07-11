@@ -2,9 +2,11 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  OneToMany,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { ProductReview } from '../../products/entities/product-review.entity';
 
 export enum UserRole {
   ADMIN = 'admin',
@@ -45,4 +47,10 @@ export class User {
 
   @UpdateDateColumn()
   updatedAt: Date;
+
+  @OneToMany(() => ProductReview, (review) => review.user)
+  productReviews: ProductReview[];
+
+  @OneToMany(() => ProductReview, (review) => review.reviewedBy)
+  reviewedProductReviews: ProductReview[];
 }

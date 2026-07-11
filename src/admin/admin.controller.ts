@@ -20,6 +20,8 @@ import { UpdateOrderStatusDto } from '../orders/dto/update-order-status.dto';
 import { CreateProductDto } from '../products/dto/create-product.dto';
 import { UpdateProductDto } from '../products/dto/update-product.dto';
 import { ProductStatus } from '../products/entities/product.entity';
+import { ProductReviewStatus } from '../products/entities/product-review.entity';
+import { UpdateProductReviewStatusDto } from '../products/dto/update-product-review-status.dto';
 import { AdminAuthGuard, AdminTokenPayload } from './guards/admin-auth.guard';
 import { productImageUploadOptions } from './config/product-image-upload.config';
 
@@ -105,5 +107,21 @@ export class AdminController {
   @UseInterceptors(FileInterceptor('image', productImageUploadOptions))
   uploadProductImage(@Param('id') id: string, @UploadedFile() file?: Express.Multer.File) {
     return this.adminService.uploadProductImage(id, file);
+  }
+
+  @Get('reviews')
+  @UseGuards(AdminAuthGuard)
+  getReviews(@Query('status') status?: ProductReviewStatus) {
+    return this.adminService.getReviews(status);
+  }
+
+  @Patch('reviews/:id/status')
+  @UseGuards(AdminAuthGuard)
+  updateReviewStatus(
+    @Param('id') id: string,
+    @Body() updateReviewStatusDto: UpdateProductReviewStatusDto,
+    @Req() request: AdminRequest,
+  ) {
+    return this.adminService.updateReviewStatus(id, updateReviewStatusDto, request.admin?.username);
   }
 }
