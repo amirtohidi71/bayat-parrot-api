@@ -20,7 +20,6 @@ import { UpdateOrderStatusDto } from '../orders/dto/update-order-status.dto';
 import { CreateProductDto } from '../products/dto/create-product.dto';
 import { UpdateProductDto } from '../products/dto/update-product.dto';
 import { ProductStatus } from '../products/entities/product.entity';
-import { ProductReviewStatus } from '../products/entities/product-review.entity';
 import { UpdateProductReviewStatusDto } from '../products/dto/update-product-review-status.dto';
 import { AdminAuthGuard, AdminTokenPayload } from './guards/admin-auth.guard';
 import { productImageUploadOptions } from './config/product-image-upload.config';
@@ -111,8 +110,14 @@ export class AdminController {
 
   @Get('reviews')
   @UseGuards(AdminAuthGuard)
-  getReviews(@Query('status') status?: ProductReviewStatus) {
+  getReviews(@Query('status') status?: string) {
     return this.adminService.getReviews(status);
+  }
+
+  @Delete('reviews/:id')
+  @UseGuards(AdminAuthGuard)
+  removeReview(@Param('id') id: string) {
+    return this.adminService.removeReview(id);
   }
 
   @Patch('reviews/:id/status')

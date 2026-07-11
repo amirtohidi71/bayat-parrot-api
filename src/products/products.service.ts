@@ -278,18 +278,33 @@ export class ProductsService {
     };
   }
 
-  async findReviewsForAdmin(status?: ProductReviewStatus | string): Promise<AdminProductReviewResponse[]> {
-    const normalizedStatus = Object.values(ProductReviewStatus).includes(status as ProductReviewStatus)
-      ? (status as ProductReviewStatus)
-      : ProductReviewStatus.PENDING;
+  async findReviewsForAdmin(status?: ProductReviewStatus | 'all' | string): Promise<AdminProductReviewResponse[]> {
+    const requestedStatus = status?.trim();
+    const normalizedStatus = Object.values(ProductReviewStatus).includes(requestedStatus as ProductReviewStatus)
+      ? (requestedStatus as ProductReviewStatus)
+      : undefined;
+
+    if (requestedStatus && requestedStatus !== 'all' && !normalizedStatus) {
+      throw new BadRequestException('Invalid review status');
+    }
 
     const reviews = await this.productReviewsRepository.find({
-      where: { status: normalizedStatus },
+      where: normalizedStatus ? { status: normalizedStatus } : {},
       relations: { product: true, user: true },
       order: { createdAt: 'DESC' },
     });
 
     return reviews.map((review) => this.toAdminReviewResponse(review));
+  }
+
+  async removeReviewForAdmin(id: string): Promise<{ success: true; message: string }> {
+    const review = await this.productReviewsRepository.findOne({ where: { id } });
+    if (!review) {
+      throw new NotFoundException(`Review with id ${id} not found`);
+    }
+
+    await this.productReviewsRepository.delete(id);
+    return { success: true, message: 'Review deleted successfully' };
   }
 
   async updateReviewStatusForAdmin(

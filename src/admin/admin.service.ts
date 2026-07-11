@@ -7,7 +7,6 @@ import { Repository } from 'typeorm';
 import { OrdersService } from '../orders/orders.service';
 import { ProductsService } from '../products/products.service';
 import { ProductStatus } from '../products/entities/product.entity';
-import { ProductReviewStatus } from '../products/entities/product-review.entity';
 import { AdminLoginDto } from './dto/admin-login.dto';
 import { CreateProductDto } from '../products/dto/create-product.dto';
 import { UpdateProductDto } from '../products/dto/update-product.dto';
@@ -115,8 +114,12 @@ export class AdminService {
     return this.productsService.addImage(id, `/uploads/${file.filename}`);
   }
 
-  getReviews(status?: ProductReviewStatus) {
+  getReviews(status?: string) {
     return this.productsService.findReviewsForAdmin(status);
+  }
+
+  removeReview(id: string) {
+    return this.productsService.removeReviewForAdmin(id);
   }
 
   async updateReviewStatus(id: string, updateReviewStatusDto: UpdateProductReviewStatusDto, adminName?: string) {
