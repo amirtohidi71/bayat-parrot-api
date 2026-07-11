@@ -20,7 +20,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "publish-all-pending": "ts-node -r tsconfig-paths/register src/scripts/publish-all-pending.ts",
     "publish-product": "ts-node -r tsconfig-paths/register src/scripts/publish-product.ts",
-    "db:backup": "ts-node -r tsconfig-paths/register src/scripts/db-backup.ts"
+    "db:backup": "ts-node -r tsconfig-paths/register src/scripts/db-backup.ts",
+    "db:cleanup-test-orders": "ts-node -r tsconfig-paths/register src/scripts/cleanup-test-orders.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
