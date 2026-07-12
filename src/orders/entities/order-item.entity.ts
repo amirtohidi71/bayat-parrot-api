@@ -27,9 +27,15 @@ export class OrderItem {
   @Column()
   productId: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  colorCode: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  colorName: string | null;
+
   @Column()
   quantity: number;
 
-  @Column('decimal', { precision: 10, scale: 2 })
+  @Column('decimal', { precision: 15, scale: 2 })
   price: number;
 }

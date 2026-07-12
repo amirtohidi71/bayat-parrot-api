@@ -29,6 +29,19 @@ class ProductSpecificationDto {
   value: string;
 }
 
+class ProductColorVariantDto {
+  @IsString()
+  colorName: string;
+
+  @IsOptional()
+  @IsString()
+  colorCode?: string;
+
+  @IsNumber()
+  @Min(0)
+  stock: number;
+}
+
 export class CreateProductDto {
   @Matches(/^BP\d+$/, { message: 'sku must match the format BP followed by digits' })
   sku: string;
@@ -74,6 +87,12 @@ export class CreateProductDto {
   @IsNumber()
   @Min(0)
   stock?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductColorVariantDto)
+  colorVariants?: ProductColorVariantDto[];
 
   @IsOptional()
   @IsEnum(ProductStatus)
