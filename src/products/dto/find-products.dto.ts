@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { IsBoolean, IsEnum, IsIn, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { ProductAgeStage, ProductCategorySlug, ProductGender } from '../entities/product.entity';
 
@@ -67,6 +67,15 @@ export class FindProductsDto {
   @IsBoolean()
   @Type(() => Boolean)
   amazingOffer?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
+  @IsBoolean()
+  handTame?: boolean;
 
   @IsOptional()
   @Type(() => Number)

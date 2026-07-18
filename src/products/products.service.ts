@@ -106,6 +106,7 @@ export class ProductsService {
       discount,
       inStock,
       amazingOffer,
+      handTame,
       page = 1,
       limit = 10,
     } = filterDto;
@@ -165,6 +166,9 @@ export class ProductsService {
     }
     if (amazingOffer) {
       query.andWhere('product.isAmazingOffer = true');
+    }
+    if (handTame !== undefined) {
+      query.andWhere('product.tagHandTame = :handTame', { handTame });
     }
     if (discount === 'true') {
       query.andWhere('(product.discountPrice IS NOT NULL OR product.discountPercent > 0)');
