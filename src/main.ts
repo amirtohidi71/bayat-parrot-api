@@ -8,8 +8,23 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.useStaticAssets(join(process.cwd(), 'public', 'uploads'), { prefix: '/uploads' });
+
+  const isProduction = process.env.NODE_ENV === 'production';
+  const allowedOrigins = new Set<string>();
+  const frontendUrl = process.env.FRONTEND_URL?.trim();
+
+  if (frontendUrl) {
+    allowedOrigins.add(frontendUrl);
+  }
+  if (!isProduction) {
+    allowedOrigins.add('http://localhost:3000');
+  }
+
   app.enableCors({
-    origin: 'http://localhost:3000',
+    origin: (origin, callback) => {
+      // Requests without an Origin header are not browser cross-origin requests.
+      callback(null, !origin || allowedOrigins.has(origin));
+    },
     credentials: true,
   });
 
