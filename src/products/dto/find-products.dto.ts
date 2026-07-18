@@ -3,6 +3,7 @@ import { IsBoolean, IsEnum, IsIn, IsNumber, IsOptional, IsString, Min } from 'cl
 import { ProductAgeStage, ProductCategorySlug, ProductGender } from '../entities/product.entity';
 
 export enum ProductSortBy {
+  BEST_SELLING = 'best_selling',
   PRICE_ASC = 'price_asc',
   PRICE_DESC = 'price_desc',
   NEWEST = 'newest',

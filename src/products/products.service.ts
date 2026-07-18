@@ -8,6 +8,8 @@ import { CreateProductReviewDto } from './dto/create-product-review.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { FindProductsDto, ProductSortBy } from './dto/find-products.dto';
 import { SearchProductsDto } from './dto/search-products.dto';
+import { OrderItem } from '../orders/entities/order-item.entity';
+import { Order, OrderStatus } from '../orders/entities/order.entity';
 
 export interface PaginatedProducts {
   items: Product[];
@@ -172,6 +174,25 @@ export class ProductsService {
     }
 
     switch (sort) {
+      case ProductSortBy.BEST_SELLING:
+        query
+          .leftJoin(
+            (salesQuery) => salesQuery
+              .from(OrderItem, 'salesItem')
+              .innerJoin(Order, 'salesOrder', 'salesOrder.id = salesItem.orderId')
+              .select('salesItem.productId', 'productId')
+              .addSelect('SUM(salesItem.quantity)', 'quantitySold')
+              .where('salesOrder.status = :completedOrderStatus', {
+                completedOrderStatus: OrderStatus.DELIVERED,
+              })
+              .groupBy('salesItem.productId'),
+            'productSales',
+            '"productSales"."productId" = product.id',
+          )
+          .addSelect('COALESCE("productSales"."quantitySold", 0)', 'productSalesQuantity')
+          .orderBy('productSalesQuantity', 'DESC')
+          .addOrderBy('product.createdAt', 'DESC');
+        break;
       case ProductSortBy.PRICE_ASC:
         query.orderBy('product.price', 'ASC');
         break;
