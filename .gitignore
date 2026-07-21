@@ -62,4 +62,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Database backups
 /backups/
+*.dump
+*.csv
+*-skus.txt
 *.sql
+!scripts/product-sync/
+!scripts/product-sync/*.sql

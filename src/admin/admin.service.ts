@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -97,6 +97,10 @@ export class AdminService {
   }
 
   updateProduct(id: string, updateProductDto: UpdateProductDto, adminName?: string) {
+    if (updateProductDto.status === ProductStatus.PUBLISHED) {
+      throw new ForbiddenException('Editors cannot publish products');
+    }
+
     return this.productsService.update(id, {
       ...updateProductDto,
       lastEditedByName: adminName ?? null,

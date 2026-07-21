@@ -570,6 +570,16 @@ export class ProductsService {
     return result.affected ?? 0;
   }
 
+  async publishPendingById(id: string): Promise<Product> {
+    const product = await this.findOne(id);
+    if (product.status !== ProductStatus.PENDING) {
+      throw new BadRequestException('Only pending products can be published');
+    }
+
+    product.status = ProductStatus.PUBLISHED;
+    return this.productsRepository.save(product);
+  }
+
   async publishBySku(sku: string): Promise<Product> {
     const product = await this.productsRepository.findOne({ where: { sku } });
     if (!product) {

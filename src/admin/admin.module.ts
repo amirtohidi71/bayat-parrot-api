@@ -8,6 +8,9 @@ import { AdminAuthGuard } from './guards/admin-auth.guard';
 import { OrdersModule } from '../orders/orders.module';
 import { ProductsModule } from '../products/products.module';
 import { User } from '../users/entities/user.entity';
+import { GodAdminController } from './god-admin.controller';
+import { GodAdminService } from './god-admin.service';
+import { GodAdminAuthGuard } from './guards/god-admin-auth.guard';
 
 @Module({
   imports: [
@@ -21,7 +24,7 @@ import { User } from '../users/entities/user.entity';
       }),
     }),
   ],
-  providers: [AdminService, AdminAuthGuard],
-  controllers: [AdminController],
+  providers: [AdminService, AdminAuthGuard, GodAdminService, GodAdminAuthGuard],
+  controllers: [AdminController, GodAdminController],
 })
 export class AdminModule {}
