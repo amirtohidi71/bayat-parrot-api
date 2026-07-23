@@ -1,6 +1,6 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { DataSource, In, QueryFailedError, Repository } from 'typeorm';
 import { Product, ProductStatus } from './entities/product.entity';
 import { ProductReview, ProductReviewStatus } from './entities/product-review.entity';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -52,8 +52,35 @@ export type AdminProductReviewResponse = {
 };
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const POSTGRES_UNIQUE_VIOLATION = '23505';
+const PRODUCT_SKU_CONFLICT_MESSAGE = 'Product SKU already exists';
+const PRODUCT_SKU_TIME_ZONE = 'Asia/Tehran';
+const PRODUCT_SKU_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  calendar: 'persian',
+  numberingSystem: 'latn',
+  timeZone: PRODUCT_SKU_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 type ProductEditorPayload = { lastEditedByName?: string | null };
 export type ProductWithBoughtTogether = Product & { boughtTogetherProducts: Product[] };
+
+export function getTehranJalaliDateCode(date = new Date()): string {
+  const dateParts = new Map(
+    PRODUCT_SKU_DATE_FORMATTER
+      .formatToParts(date)
+      .filter((part) => part.type === 'year' || part.type === 'month' || part.type === 'day')
+      .map((part) => [part.type, part.value]),
+  );
+  const year = dateParts.get('year');
+  const month = dateParts.get('month');
+  const day = dateParts.get('day');
+  if (!year || !month || !day) {
+    throw new Error('Failed to generate the product SKU date');
+  }
+  return `${year}${month.padStart(2, '0')}${day.padStart(2, '0')}`;
+}
 
 @Injectable()
 export class ProductsService {
@@ -62,6 +89,7 @@ export class ProductsService {
     private readonly productsRepository: Repository<Product>,
     @InjectRepository(ProductReview)
     private readonly productReviewsRepository: Repository<ProductReview>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async create(createProductDto: CreateProductDto & ProductEditorPayload): Promise<Product> {
@@ -75,8 +103,35 @@ export class ProductsService {
       boughtTogetherProductIds: await this.normalizeBoughtTogetherIds(createProductDto.boughtTogetherProductIds),
     };
     this.validateAmazingOfferEnd(payload);
-    const product = this.productsRepository.create(payload);
-    return this.productsRepository.save(product);
+    const skuPrefix = `BP${getTehranJalaliDateCode()}`;
+
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const productRepository = manager.getRepository(Product);
+        await productRepository.query('SELECT pg_advisory_xact_lock(hashtext($1))', [skuPrefix]);
+        const sku = await this.generateNextProductSku(productRepository, skuPrefix);
+        return productRepository.save(productRepository.create({ ...payload, sku }));
+      });
+    } catch (error) {
+      this.rethrowProductWriteError(error);
+    }
+  }
+
+  private async generateNextProductSku(
+    productRepository: Repository<Product>,
+    skuPrefix: string,
+  ): Promise<string> {
+    const result = await productRepository
+      .createQueryBuilder('product')
+      .withDeleted()
+      .select('MAX(CAST(RIGHT(product.sku, 4) AS integer))', 'max')
+      .where('product.sku ~ :skuPattern', { skuPattern: `^${skuPrefix}[0-9]{4}$` })
+      .getRawOne<{ max: string | null }>();
+    const nextSequence = Number(result?.max ?? 0) + 1;
+    if (nextSequence > 9999) {
+      throw new BadRequestException('Daily product SKU limit reached');
+    }
+    return `${skuPrefix}${String(nextSequence).padStart(4, '0')}`;
   }
 
   findAllPublished(filterDto: FindProductsDto): Promise<PaginatedProducts> {
@@ -386,7 +441,26 @@ export class ProductsService {
     };
     this.validateAmazingOfferEnd({ ...product, ...payload });
     Object.assign(product, payload);
-    return this.productsRepository.save(product);
+    try {
+      return await this.productsRepository.save(product);
+    } catch (error) {
+      this.rethrowProductWriteError(error);
+    }
+  }
+
+  private rethrowProductWriteError(error: unknown): never {
+    const queryError = error as QueryFailedError & {
+      code?: string;
+      driverError?: { code?: string };
+    };
+    if (
+      error instanceof QueryFailedError &&
+      (queryError.code === POSTGRES_UNIQUE_VIOLATION ||
+        queryError.driverError?.code === POSTGRES_UNIQUE_VIOLATION)
+    ) {
+      throw new ConflictException(PRODUCT_SKU_CONFLICT_MESSAGE);
+    }
+    throw error;
   }
 
   private normalizeColorVariants(

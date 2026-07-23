@@ -164,7 +164,7 @@ function createContext(authorization?: string): ExecutionContext {
 describe('ProductsService owner publication', () => {
   it('changes only a pending product status to published', async () => {
     const repository = { save: jest.fn(async (product: Product) => product) };
-    const service = new ProductsService(repository as never, {} as never);
+    const service = new ProductsService(repository as never, {} as never, {} as never);
     const product = { id: 'product-id', name: 'Product', status: ProductStatus.PENDING } as Product;
     jest.spyOn(service, 'findOne').mockResolvedValue(product);
 
@@ -175,7 +175,7 @@ describe('ProductsService owner publication', () => {
 
   it('does not publish a product that is not pending', async () => {
     const repository = { save: jest.fn() };
-    const service = new ProductsService(repository as never, {} as never);
+    const service = new ProductsService(repository as never, {} as never, {} as never);
     jest.spyOn(service, 'findOne').mockResolvedValue({
       id: 'product-id',
       status: ProductStatus.DRAFT,
