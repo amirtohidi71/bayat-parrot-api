@@ -10,6 +10,7 @@ import { FindProductsDto, ProductSortBy } from './dto/find-products.dto';
 import { SearchProductsDto } from './dto/search-products.dto';
 import { OrderItem } from '../orders/entities/order-item.entity';
 import { Order, OrderStatus } from '../orders/entities/order.entity';
+import { validateProductCatalogRules } from './config/product-catalog-rules';
 
 export interface PaginatedProducts {
   items: Product[];
@@ -103,6 +104,7 @@ export class ProductsService {
       boughtTogetherProductIds: await this.normalizeBoughtTogetherIds(createProductDto.boughtTogetherProductIds),
     };
     this.validateAmazingOfferEnd(payload);
+    validateProductCatalogRules(payload);
     const skuPrefix = `BP${getTehranJalaliDateCode()}`;
 
     try {
@@ -151,6 +153,7 @@ export class ProductsService {
       category,
       species,
       subCategory,
+      weight,
       gender,
       ageStage,
       age,
@@ -197,6 +200,9 @@ export class ProductsService {
       if (values.length > 0) {
         query.andWhere('product.subCategory IN (:...subCategories)', { subCategories: values });
       }
+    }
+    if (weight) {
+      query.andWhere('product.weight = :weight', { weight });
     }
     if (gender) {
       query.andWhere('product.gender = :gender', { gender });
@@ -439,6 +445,17 @@ export class ProductsService {
           }
         : {}),
     };
+    const catalogFieldsChanged = (
+      (Object.prototype.hasOwnProperty.call(updateProductDto, 'categorySlug')
+        && updateProductDto.categorySlug !== product.categorySlug)
+      || (Object.prototype.hasOwnProperty.call(updateProductDto, 'subCategory')
+        && (updateProductDto.subCategory ?? null) !== (product.subCategory ?? null))
+      || (Object.prototype.hasOwnProperty.call(updateProductDto, 'weight')
+        && (updateProductDto.weight ?? null) !== (product.weight ?? null))
+    );
+    if (catalogFieldsChanged) {
+      validateProductCatalogRules({ ...product, ...payload });
+    }
     this.validateAmazingOfferEnd({ ...product, ...payload });
     Object.assign(product, payload);
     try {

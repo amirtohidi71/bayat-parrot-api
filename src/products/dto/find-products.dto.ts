@@ -37,6 +37,10 @@ export class FindProductsDto {
 
   @IsOptional()
   @IsString()
+  weight?: string;
+
+  @IsOptional()
+  @IsString()
   discount?: string;
 
   @IsOptional()

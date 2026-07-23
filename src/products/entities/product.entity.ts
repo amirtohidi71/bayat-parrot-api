@@ -19,6 +19,7 @@ export enum ProductCategorySlug {
   BUY_PARROT = 'buy-parrot',
   PARROT_FOOD = 'parrot-food',
   PARROT_SERLAK = 'parrot-serlak',
+  PARROT_TREATS = 'parrot-treats',
   PARROT_SUPPLEMENTS = 'parrot-supplements',
   PARROT_TOYS = 'parrot-toys',
   PARROT_ACCESSORIES = 'parrot-accessories',
