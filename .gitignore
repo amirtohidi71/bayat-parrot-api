@@ -68,3 +68,5 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 *.sql
 !scripts/product-sync/
 !scripts/product-sync/*.sql
+!scripts/migrations/
+!scripts/migrations/*.sql
