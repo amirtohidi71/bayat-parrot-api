@@ -33,8 +33,13 @@ async function bootstrap() {
     new ValidationPipe({
       whitelist: true,
       transform: true,
+      validationError: { target: false, value: false },
       exceptionFactory: (errors) => {
-        validationLogger.debug(`Request body validation failed: ${JSON.stringify(errors)}`);
+        const safeErrors = errors.map((error) => ({
+          property: error.property,
+          constraints: Object.keys(error.constraints ?? {}),
+        }));
+        validationLogger.debug(`Request body validation failed: ${JSON.stringify(safeErrors)}`);
         return new BadRequestException(errors);
       },
     }),

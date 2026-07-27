@@ -22,6 +22,9 @@ export class Otp {
   @Column({ default: false })
   consumed: boolean;
 
+  @Column({ default: 0 })
+  attempts: number;
+
   @CreateDateColumn()
   createdAt: Date;
 }

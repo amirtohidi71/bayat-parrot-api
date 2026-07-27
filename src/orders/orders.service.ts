@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, QueryFailedError, Repository } from 'typeorm';
 import { Order, OrderStatus, PaymentStatus } from './entities/order.entity';
@@ -8,6 +8,7 @@ import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { Product } from '../products/entities/product.entity';
 import { UserRole } from '../users/entities/user.entity';
 import { SmsService } from '../common/sms/sms.service';
+import { getSmsErrorCode, maskPhone } from '../common/sms/sms.types';
 
 const POSTGRES_UNIQUE_VIOLATION = '23505';
 const FIRST_ORDER_NUMBER = 87653221;
@@ -40,6 +41,8 @@ export interface AdminDashboardSummary {
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     @InjectRepository(Order)
     private readonly ordersRepository: Repository<Order>,
@@ -135,10 +138,16 @@ export class OrdersService {
       return savedOrder;
     });
 
-    await this.smsService.send(
-      phone,
-      `سفارش شما با کد ${order.orderNumber} با موفقیت ثبت شد.`,
-    );
+    try {
+      await this.smsService.sendText(
+        phone,
+        `سفارش شما با کد ${order.orderNumber} با موفقیت ثبت شد.`,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `SMS operation=order-created result=failed recipient=${maskPhone(phone)} code=${getSmsErrorCode(error)}`,
+      );
+    }
 
     return order;
   }
