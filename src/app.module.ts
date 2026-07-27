@@ -25,7 +25,9 @@ import { AdminModule } from './admin/admin.module';
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_NAME'),
         autoLoadEntities: true,
-        synchronize: true,
+        synchronize:
+          configService.get<string>('NODE_ENV')?.trim().toLowerCase() !==
+          'production',
       }),
     }),
     AuthModule,

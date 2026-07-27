@@ -8,7 +8,12 @@ jest.mock('crypto', () => ({
   randomInt: jest.fn(() => 123),
 }));
 
-import { HttpException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import * as crypto from 'crypto';
 import { AuthService } from './auth.service';
 import { Otp } from './entities/otp.entity';
@@ -127,9 +132,16 @@ describe('AuthService OTP security', () => {
     const { service, smsService } = createService();
     await service.sendOtp({ phone: '09123456789' });
 
-    await expect(service.sendOtp({ phone: '09123456789' })).rejects.toMatchObject({
-      status: 429,
-    } satisfies Partial<HttpException>);
+    try {
+      await service.sendOtp({ phone: '09123456789' });
+      throw new Error('Expected the cooldown request to fail');
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(HttpException);
+      if (!(error instanceof HttpException)) {
+        throw error;
+      }
+      expect(error.getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    }
     expect(smsService.sendOtp).toHaveBeenCalledTimes(1);
   });
 

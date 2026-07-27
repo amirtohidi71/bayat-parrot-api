@@ -27,46 +27,60 @@ function successfulResponse(metaStatus = true): Response {
   });
 }
 
+function getJsonRequestBody(options: RequestInit | undefined): string {
+  const body = options?.body;
+  if (typeof body !== 'string') {
+    throw new Error('Expected a JSON string request body');
+  }
+  return body;
+}
+
 describe('IppanelClient', () => {
   it('creates the exact Pattern payload and raw Authorization header', async () => {
-    const transport = jest.fn(async () => successfulResponse());
-    const client = new IppanelClient(enabledConfig, transport as SmsHttpTransport);
+    const transport = jest.fn<Promise<Response>, Parameters<SmsHttpTransport>>(
+      () => Promise.resolve(successfulResponse()),
+    );
+    const client = new IppanelClient(enabledConfig, transport);
 
     await client.sendPattern('09123456789', '12345');
 
     expect(transport).toHaveBeenCalledTimes(1);
     const [url, options] = transport.mock.calls[0];
+    const body = getJsonRequestBody(options);
     expect(url).toBe('https://edge.ippanel.com/v1/api/send');
     expect(options?.headers).toEqual({
       'Content-Type': 'application/json',
       Authorization: 'test-api-key',
     });
-    expect(JSON.parse(String(options?.body))).toEqual({
+    expect(JSON.parse(body)).toEqual({
       sending_type: 'pattern',
       from_number: 'test-sender',
       code: 'test-pattern',
       recipients: ['+989123456789'],
       params: { code: '12345' },
     });
-    expect(String(options?.body)).not.toContain('phonebook');
-    expect(String(options?.body)).not.toContain('send_time');
+    expect(body).not.toContain('phonebook');
+    expect(body).not.toContain('send_time');
   });
 
   it('creates the exact Webservice payload', async () => {
-    const transport = jest.fn(async () => successfulResponse());
-    const client = new IppanelClient(enabledConfig, transport as SmsHttpTransport);
+    const transport = jest.fn<Promise<Response>, Parameters<SmsHttpTransport>>(
+      () => Promise.resolve(successfulResponse()),
+    );
+    const client = new IppanelClient(enabledConfig, transport);
 
     await client.sendWebservice('+989123456789', 'Test message');
 
     const options = transport.mock.calls[0][1];
-    expect(JSON.parse(String(options?.body))).toEqual({
+    const body = getJsonRequestBody(options);
+    expect(JSON.parse(body)).toEqual({
       sending_type: 'webservice',
       from_number: 'test-sender',
       message: 'Test message',
       params: { recipients: ['+989123456789'] },
     });
-    expect(String(options?.body)).not.toContain('phonebook');
-    expect(String(options?.body)).not.toContain('send_time');
+    expect(body).not.toContain('phonebook');
+    expect(body).not.toContain('send_time');
   });
 
   it.each([
@@ -91,16 +105,20 @@ describe('IppanelClient', () => {
     [429, 'SMS_PROVIDER_RATE_LIMIT'],
     [500, 'SMS_PROVIDER_HTTP_ERROR'],
   ])('maps HTTP %s to %s without retry', async (status, code) => {
-    const transport = jest.fn(async () => new Response('{}', { status }));
-    const client = new IppanelClient(enabledConfig, transport as SmsHttpTransport);
+    const transport = jest.fn<Promise<Response>, Parameters<SmsHttpTransport>>(
+      () => Promise.resolve(new Response('{}', { status })),
+    );
+    const client = new IppanelClient(enabledConfig, transport);
 
     await expect(client.sendPattern('09123456789', '12345')).rejects.toMatchObject({ code });
     expect(transport).toHaveBeenCalledTimes(1);
   });
 
   it('rejects meta.status=false', async () => {
-    const transport = jest.fn(async () => successfulResponse(false));
-    const client = new IppanelClient(enabledConfig, transport as SmsHttpTransport);
+    const transport = jest.fn<Promise<Response>, Parameters<SmsHttpTransport>>(
+      () => Promise.resolve(successfulResponse(false)),
+    );
+    const client = new IppanelClient(enabledConfig, transport);
 
     await expect(client.sendPattern('09123456789', '12345')).rejects.toMatchObject({
       code: 'SMS_PROVIDER_REJECTED',
@@ -108,8 +126,10 @@ describe('IppanelClient', () => {
   });
 
   it('rejects invalid JSON', async () => {
-    const transport = jest.fn(async () => new Response('not-json', { status: 200 }));
-    const client = new IppanelClient(enabledConfig, transport as SmsHttpTransport);
+    const transport = jest.fn<Promise<Response>, Parameters<SmsHttpTransport>>(
+      () => Promise.resolve(new Response('not-json', { status: 200 })),
+    );
+    const client = new IppanelClient(enabledConfig, transport);
 
     await expect(client.sendPattern('09123456789', '12345')).rejects.toMatchObject({
       code: 'SMS_PROVIDER_INVALID_RESPONSE',
@@ -118,8 +138,11 @@ describe('IppanelClient', () => {
 
   it('aborts on timeout and does not retry', async () => {
     jest.useFakeTimers();
-    const transport = jest.fn(
-      async (_url: string | URL | Request, options?: RequestInit): Promise<Response> =>
+    const transport = jest.fn<Promise<Response>, Parameters<SmsHttpTransport>>(
+      (
+        _url: string | URL | Request,
+        options?: RequestInit,
+      ): Promise<Response> =>
         new Promise((_resolve, reject) => {
           options?.signal?.addEventListener('abort', () => {
             const error = new Error('aborted');
@@ -130,7 +153,7 @@ describe('IppanelClient', () => {
     );
     const client = new IppanelClient(
       { ...enabledConfig, timeoutMs: 100 },
-      transport as SmsHttpTransport,
+      transport,
     );
 
     const request = client.sendPattern('09123456789', '12345');
