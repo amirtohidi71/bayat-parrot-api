@@ -1,18 +1,22 @@
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Full')]
 param(
   [Parameter(Mandatory = $true)]
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')]
   [string]$ReleaseId,
 
-  [Parameter(Mandatory = $true)]
+  [Parameter(Mandatory = $true, ParameterSetName = 'Full')]
   [ValidateNotNullOrEmpty()]
   [string]$PublicApiUrl,
 
   [string]$BackendPath = (Split-Path -Parent $PSScriptRoot),
 
+  [Parameter(ParameterSetName = 'Full')]
   [string]$FrontendPath = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'bayat-parrot'),
 
-  [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'artifacts')
+  [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'artifacts'),
+
+  [Parameter(Mandatory = $true, ParameterSetName = 'BackendOnly')]
+  [switch]$BackendOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -382,7 +386,6 @@ function Remove-OwnedDirectory {
 }
 
 $backendPathResolved = (Resolve-Path -LiteralPath $BackendPath).Path
-$frontendPathResolved = (Resolve-Path -LiteralPath $FrontendPath).Path
 $outputPath = [System.IO.Path]::GetFullPath($OutputDirectory)
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $runId = [guid]::NewGuid().ToString('N')
@@ -392,17 +395,22 @@ $stagingRoot = Join-Path $tempRoot $stagingName
 $publishRoot = Join-Path $outputPath $publishName
 $lockPath = Join-Path $tempRoot "bayat-parrot-package-$ReleaseId.lock"
 $backendStage = Join-Path $stagingRoot 'backend'
-$frontendStage = Join-Path $stagingRoot 'frontend'
 $lockStream = $null
 $lockAcquired = $false
 $publishedOutputs = @()
-$previousPublicApiUrl = $env:NEXT_PUBLIC_API_URL
+$previousPublicApiUrl = $null
 
-$apiUri = $null
-if (-not [System.Uri]::TryCreate($PublicApiUrl, [System.UriKind]::Absolute, [ref]$apiUri) -or
-    $apiUri.Scheme -notin @('http', 'https') -or
-    -not [string]::IsNullOrEmpty($apiUri.UserInfo)) {
-  throw 'PublicApiUrl must be an absolute HTTP(S) URL without embedded credentials.'
+if (-not $BackendOnly) {
+  $frontendPathResolved = (Resolve-Path -LiteralPath $FrontendPath).Path
+  $frontendStage = Join-Path $stagingRoot 'frontend'
+  $previousPublicApiUrl = $env:NEXT_PUBLIC_API_URL
+
+  $apiUri = $null
+  if (-not [System.Uri]::TryCreate($PublicApiUrl, [System.UriKind]::Absolute, [ref]$apiUri) -or
+      $apiUri.Scheme -notin @('http', 'https') -or
+      -not [string]::IsNullOrEmpty($apiUri.UserInfo)) {
+    throw 'PublicApiUrl must be an absolute HTTP(S) URL without embedded credentials.'
+  }
 }
 
 try {
@@ -423,15 +431,16 @@ try {
   }
 
   $backendCommit = Get-CleanRepositoryCommit -Path $backendPathResolved
-  $frontendCommit = Get-CleanRepositoryCommit -Path $frontendPathResolved
   $backendArchive = Join-Path $outputPath "backend-$ReleaseId-$backendCommit.tar.gz"
-  $frontendArchive = Join-Path $outputPath "frontend-$ReleaseId-$frontendCommit.tar.gz"
   $artifactOutputs = @(
     $backendArchive,
-    "$backendArchive.sha256",
-    $frontendArchive,
-    "$frontendArchive.sha256"
+    "$backendArchive.sha256"
   )
+  if (-not $BackendOnly) {
+    $frontendCommit = Get-CleanRepositoryCommit -Path $frontendPathResolved
+    $frontendArchive = Join-Path $outputPath "frontend-$ReleaseId-$frontendCommit.tar.gz"
+    $artifactOutputs += $frontendArchive, "$frontendArchive.sha256"
+  }
   foreach ($artifactOutput in $artifactOutputs) {
     if (Test-Path -LiteralPath $artifactOutput) {
       throw "Artifact output already exists: $artifactOutput"
@@ -439,24 +448,35 @@ try {
   }
 
   New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
-  New-Item -ItemType Directory -Path $backendStage, $frontendStage -Force | Out-Null
+  New-Item -ItemType Directory -Path $backendStage -Force | Out-Null
+  if (-not $BackendOnly) {
+    New-Item -ItemType Directory -Path $frontendStage -Force | Out-Null
+  }
 
   Invoke-NpmBuild -Path $backendPathResolved
 
-  $env:NEXT_PUBLIC_API_URL = $PublicApiUrl
-  Invoke-NpmBuild -Path $frontendPathResolved
+  if (-not $BackendOnly) {
+    $env:NEXT_PUBLIC_API_URL = $PublicApiUrl
+    Invoke-NpmBuild -Path $frontendPathResolved
+  }
 
-  if ((Get-CleanRepositoryCommit -Path $backendPathResolved) -ne $backendCommit -or
-      (Get-CleanRepositoryCommit -Path $frontendPathResolved) -ne $frontendCommit) {
+  if ((Get-CleanRepositoryCommit -Path $backendPathResolved) -ne $backendCommit) {
     throw 'Repository commit changed during packaging.'
+  }
+  if (-not $BackendOnly) {
+    if ((Get-CleanRepositoryCommit -Path $frontendPathResolved) -ne $frontendCommit) {
+      throw 'Repository commit changed during packaging.'
+    }
   }
 
   if (-not (Test-Path -LiteralPath (Join-Path $backendPathResolved 'dist/main.js') -PathType Leaf)) {
     throw 'Backend build did not produce dist/main.js.'
   }
 
-  if (-not (Test-Path -LiteralPath (Join-Path $frontendPathResolved '.next/standalone/server.js') -PathType Leaf)) {
-    throw 'Frontend build did not produce .next/standalone/server.js.'
+  if (-not $BackendOnly) {
+    if (-not (Test-Path -LiteralPath (Join-Path $frontendPathResolved '.next/standalone/server.js') -PathType Leaf)) {
+      throw 'Frontend build did not produce .next/standalone/server.js.'
+    }
   }
 
   Copy-DirectoryContents -Source (Join-Path $backendPathResolved 'dist') -Destination (Join-Path $backendStage 'dist')
@@ -470,42 +490,57 @@ try {
   }
   $runtimeMetadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $backendStage 'runtime-metadata.json') -Encoding utf8
 
-  $standaloneTarget = Join-Path $frontendStage '.next/standalone'
-  Copy-DirectoryContents -Source (Join-Path $frontendPathResolved '.next/standalone') -Destination $standaloneTarget
-  Copy-DirectoryContents -Source (Join-Path $frontendPathResolved '.next/static') -Destination (Join-Path $standaloneTarget '.next/static')
-  Copy-DirectoryContents -Source (Join-Path $frontendPathResolved 'public') -Destination (Join-Path $standaloneTarget 'public')
+  if (-not $BackendOnly) {
+    $standaloneTarget = Join-Path $frontendStage '.next/standalone'
+    Copy-DirectoryContents -Source (Join-Path $frontendPathResolved '.next/standalone') -Destination $standaloneTarget
+    Copy-DirectoryContents -Source (Join-Path $frontendPathResolved '.next/static') -Destination (Join-Path $standaloneTarget '.next/static')
+    Copy-DirectoryContents -Source (Join-Path $frontendPathResolved 'public') -Destination (Join-Path $standaloneTarget 'public')
+  }
 
   Assert-ProtectedArtifact -Root $backendStage
   Assert-NoArtifactSecrets -Root $backendStage
   Assert-BackendArtifactLayout -Root $backendStage
-  Assert-ProtectedArtifact -Root $frontendStage
-  Assert-NoArtifactSecrets -Root $frontendStage
-  Assert-FrontendArtifactLayout -Root $frontendStage
+  if (-not $BackendOnly) {
+    Assert-ProtectedArtifact -Root $frontendStage
+    Assert-NoArtifactSecrets -Root $frontendStage
+    Assert-FrontendArtifactLayout -Root $frontendStage
+  }
 
   New-Item -ItemType Directory -Path $publishRoot | Out-Null
   $backendTemporaryArchive = Join-Path $publishRoot ([System.IO.Path]::GetFileName($backendArchive))
-  $frontendTemporaryArchive = Join-Path $publishRoot ([System.IO.Path]::GetFileName($frontendArchive))
 
   New-TarGzArchive -SourceDirectory $backendStage -ArchivePath $backendTemporaryArchive
-  New-TarGzArchive -SourceDirectory $frontendStage -ArchivePath $frontendTemporaryArchive
+  if (-not $BackendOnly) {
+    $frontendTemporaryArchive = Join-Path $publishRoot ([System.IO.Path]::GetFileName($frontendArchive))
+    New-TarGzArchive -SourceDirectory $frontendStage -ArchivePath $frontendTemporaryArchive
+  }
   Write-Sha256File -ArchivePath $backendTemporaryArchive
-  Write-Sha256File -ArchivePath $frontendTemporaryArchive
+  if (-not $BackendOnly) {
+    Write-Sha256File -ArchivePath $frontendTemporaryArchive
+  }
   Assert-Sha256File -ArchivePath $backendTemporaryArchive
-  Assert-Sha256File -ArchivePath $frontendTemporaryArchive
+  if (-not $BackendOnly) {
+    Assert-Sha256File -ArchivePath $frontendTemporaryArchive
+  }
 
   Move-NewFile -Source "$backendTemporaryArchive.sha256" -Destination "$backendArchive.sha256"
   $publishedOutputs += "$backendArchive.sha256"
   Move-NewFile -Source $backendTemporaryArchive -Destination $backendArchive
   $publishedOutputs += $backendArchive
-  Move-NewFile -Source "$frontendTemporaryArchive.sha256" -Destination "$frontendArchive.sha256"
-  $publishedOutputs += "$frontendArchive.sha256"
-  Move-NewFile -Source $frontendTemporaryArchive -Destination $frontendArchive
-  $publishedOutputs += $frontendArchive
+
+  if (-not $BackendOnly) {
+    Move-NewFile -Source "$frontendTemporaryArchive.sha256" -Destination "$frontendArchive.sha256"
+    $publishedOutputs += "$frontendArchive.sha256"
+    Move-NewFile -Source $frontendTemporaryArchive -Destination $frontendArchive
+    $publishedOutputs += $frontendArchive
+  }
 
   Write-Output "Created $backendArchive"
   Write-Output "Created ${backendArchive}.sha256"
-  Write-Output "Created $frontendArchive"
-  Write-Output "Created ${frontendArchive}.sha256"
+  if (-not $BackendOnly) {
+    Write-Output "Created $frontendArchive"
+    Write-Output "Created ${frontendArchive}.sha256"
+  }
 }
 catch {
   foreach ($publishedOutput in $publishedOutputs) {
@@ -517,11 +552,13 @@ catch {
 }
 finally {
   try {
-    if ($null -eq $previousPublicApiUrl) {
-      Remove-Item Env:NEXT_PUBLIC_API_URL -ErrorAction SilentlyContinue
-    }
-    else {
-      $env:NEXT_PUBLIC_API_URL = $previousPublicApiUrl
+    if (-not $BackendOnly) {
+      if ($null -eq $previousPublicApiUrl) {
+        Remove-Item Env:NEXT_PUBLIC_API_URL -ErrorAction SilentlyContinue
+      }
+      else {
+        $env:NEXT_PUBLIC_API_URL = $previousPublicApiUrl
+      }
     }
   }
   finally {
