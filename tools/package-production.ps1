@@ -5,19 +5,35 @@ param(
   [string]$ReleaseId,
 
   [Parameter(Mandatory = $true, ParameterSetName = 'Full')]
+  [Parameter(Mandatory = $true, ParameterSetName = 'FrontendOnly')]
+  [Parameter(ParameterSetName = 'InvalidCombination')]
   [ValidateNotNullOrEmpty()]
   [string]$PublicApiUrl,
 
+  [Parameter(ParameterSetName = 'Full')]
+  [Parameter(ParameterSetName = 'BackendOnly')]
+  [Parameter(ParameterSetName = 'InvalidCombination')]
   [string]$BackendPath = (Split-Path -Parent $PSScriptRoot),
 
   [Parameter(ParameterSetName = 'Full')]
+  [Parameter(ParameterSetName = 'FrontendOnly')]
+  [Parameter(ParameterSetName = 'InvalidCombination')]
   [string]$FrontendPath = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'bayat-parrot'),
 
   [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'artifacts'),
 
   [Parameter(Mandatory = $true, ParameterSetName = 'BackendOnly')]
-  [switch]$BackendOnly
+  [Parameter(Mandatory = $true, ParameterSetName = 'InvalidCombination')]
+  [switch]$BackendOnly,
+
+  [Parameter(Mandatory = $true, ParameterSetName = 'FrontendOnly')]
+  [Parameter(Mandatory = $true, ParameterSetName = 'InvalidCombination')]
+  [switch]$FrontendOnly
 )
+
+if ($BackendOnly -and $FrontendOnly) {
+  throw 'BackendOnly and FrontendOnly cannot be used together.'
+}
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -385,7 +401,13 @@ function Remove-OwnedDirectory {
   }
 }
 
-$backendPathResolved = (Resolve-Path -LiteralPath $BackendPath).Path
+$includeBackend = -not $FrontendOnly
+$includeFrontend = -not $BackendOnly
+$backendPathResolved = $null
+$frontendPathResolved = $null
+if ($includeBackend) {
+  $backendPathResolved = (Resolve-Path -LiteralPath $BackendPath).Path
+}
 $outputPath = [System.IO.Path]::GetFullPath($OutputDirectory)
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $runId = [guid]::NewGuid().ToString('N')
@@ -394,13 +416,17 @@ $publishName = ".bayat-parrot-package-$ReleaseId-$runId"
 $stagingRoot = Join-Path $tempRoot $stagingName
 $publishRoot = Join-Path $outputPath $publishName
 $lockPath = Join-Path $tempRoot "bayat-parrot-package-$ReleaseId.lock"
-$backendStage = Join-Path $stagingRoot 'backend'
+$backendStage = $null
+$frontendStage = $null
+if ($includeBackend) {
+  $backendStage = Join-Path $stagingRoot 'backend'
+}
 $lockStream = $null
 $lockAcquired = $false
 $publishedOutputs = @()
 $previousPublicApiUrl = $null
 
-if (-not $BackendOnly) {
+if ($includeFrontend) {
   $frontendPathResolved = (Resolve-Path -LiteralPath $FrontendPath).Path
   $frontendStage = Join-Path $stagingRoot 'frontend'
   $previousPublicApiUrl = $env:NEXT_PUBLIC_API_URL
@@ -430,13 +456,13 @@ try {
     throw
   }
 
-  $backendCommit = Get-CleanRepositoryCommit -Path $backendPathResolved
-  $backendArchive = Join-Path $outputPath "backend-$ReleaseId-$backendCommit.tar.gz"
-  $artifactOutputs = @(
-    $backendArchive,
-    "$backendArchive.sha256"
-  )
-  if (-not $BackendOnly) {
+  $artifactOutputs = @()
+  if ($includeBackend) {
+    $backendCommit = Get-CleanRepositoryCommit -Path $backendPathResolved
+    $backendArchive = Join-Path $outputPath "backend-$ReleaseId-$backendCommit.tar.gz"
+    $artifactOutputs += $backendArchive, "$backendArchive.sha256"
+  }
+  if ($includeFrontend) {
     $frontendCommit = Get-CleanRepositoryCommit -Path $frontendPathResolved
     $frontendArchive = Join-Path $outputPath "frontend-$ReleaseId-$frontendCommit.tar.gz"
     $artifactOutputs += $frontendArchive, "$frontendArchive.sha256"
@@ -448,96 +474,118 @@ try {
   }
 
   New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
-  New-Item -ItemType Directory -Path $backendStage -Force | Out-Null
-  if (-not $BackendOnly) {
+  if ($includeBackend) {
+    New-Item -ItemType Directory -Path $backendStage -Force | Out-Null
+  }
+  if ($includeFrontend) {
     New-Item -ItemType Directory -Path $frontendStage -Force | Out-Null
   }
 
-  Invoke-NpmBuild -Path $backendPathResolved
+  if ($includeBackend) {
+    Invoke-NpmBuild -Path $backendPathResolved
+  }
 
-  if (-not $BackendOnly) {
+  if ($includeFrontend) {
     $env:NEXT_PUBLIC_API_URL = $PublicApiUrl
     Invoke-NpmBuild -Path $frontendPathResolved
   }
 
-  if ((Get-CleanRepositoryCommit -Path $backendPathResolved) -ne $backendCommit) {
-    throw 'Repository commit changed during packaging.'
+  if ($includeBackend) {
+    if ((Get-CleanRepositoryCommit -Path $backendPathResolved) -ne $backendCommit) {
+      throw 'Repository commit changed during packaging.'
+    }
   }
-  if (-not $BackendOnly) {
+  if ($includeFrontend) {
     if ((Get-CleanRepositoryCommit -Path $frontendPathResolved) -ne $frontendCommit) {
       throw 'Repository commit changed during packaging.'
     }
   }
 
-  if (-not (Test-Path -LiteralPath (Join-Path $backendPathResolved 'dist/main.js') -PathType Leaf)) {
-    throw 'Backend build did not produce dist/main.js.'
+  if ($includeBackend) {
+    if (-not (Test-Path -LiteralPath (Join-Path $backendPathResolved 'dist/main.js') -PathType Leaf)) {
+      throw 'Backend build did not produce dist/main.js.'
+    }
   }
 
-  if (-not $BackendOnly) {
+  if ($includeFrontend) {
     if (-not (Test-Path -LiteralPath (Join-Path $frontendPathResolved '.next/standalone/server.js') -PathType Leaf)) {
       throw 'Frontend build did not produce .next/standalone/server.js.'
     }
   }
 
-  Copy-DirectoryContents -Source (Join-Path $backendPathResolved 'dist') -Destination (Join-Path $backendStage 'dist')
-  Copy-Item -LiteralPath (Join-Path $backendPathResolved 'package.json') -Destination $backendStage
-  Copy-Item -LiteralPath (Join-Path $backendPathResolved 'package-lock.json') -Destination $backendStage
-  $runtimeMetadata = [ordered]@{
-    targetOs = 'linux'
-    targetArch = 'x64'
-    nodeMajor = 22
-    installCommand = 'npm ci --omit=dev --no-audit --no-fund'
+  if ($includeBackend) {
+    Copy-DirectoryContents -Source (Join-Path $backendPathResolved 'dist') -Destination (Join-Path $backendStage 'dist')
+    Copy-Item -LiteralPath (Join-Path $backendPathResolved 'package.json') -Destination $backendStage
+    Copy-Item -LiteralPath (Join-Path $backendPathResolved 'package-lock.json') -Destination $backendStage
+    $runtimeMetadata = [ordered]@{
+      targetOs = 'linux'
+      targetArch = 'x64'
+      nodeMajor = 22
+      installCommand = 'npm ci --omit=dev --no-audit --no-fund'
+    }
+    $runtimeMetadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $backendStage 'runtime-metadata.json') -Encoding utf8
   }
-  $runtimeMetadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $backendStage 'runtime-metadata.json') -Encoding utf8
 
-  if (-not $BackendOnly) {
+  if ($includeFrontend) {
     $standaloneTarget = Join-Path $frontendStage '.next/standalone'
     Copy-DirectoryContents -Source (Join-Path $frontendPathResolved '.next/standalone') -Destination $standaloneTarget
     Copy-DirectoryContents -Source (Join-Path $frontendPathResolved '.next/static') -Destination (Join-Path $standaloneTarget '.next/static')
     Copy-DirectoryContents -Source (Join-Path $frontendPathResolved 'public') -Destination (Join-Path $standaloneTarget 'public')
   }
 
-  Assert-ProtectedArtifact -Root $backendStage
-  Assert-NoArtifactSecrets -Root $backendStage
-  Assert-BackendArtifactLayout -Root $backendStage
-  if (-not $BackendOnly) {
+  if ($includeBackend) {
+    Assert-ProtectedArtifact -Root $backendStage
+    Assert-NoArtifactSecrets -Root $backendStage
+    Assert-BackendArtifactLayout -Root $backendStage
+  }
+  if ($includeFrontend) {
     Assert-ProtectedArtifact -Root $frontendStage
     Assert-NoArtifactSecrets -Root $frontendStage
     Assert-FrontendArtifactLayout -Root $frontendStage
   }
 
   New-Item -ItemType Directory -Path $publishRoot | Out-Null
-  $backendTemporaryArchive = Join-Path $publishRoot ([System.IO.Path]::GetFileName($backendArchive))
+  if ($includeBackend) {
+    $backendTemporaryArchive = Join-Path $publishRoot ([System.IO.Path]::GetFileName($backendArchive))
+    New-TarGzArchive -SourceDirectory $backendStage -ArchivePath $backendTemporaryArchive
+  }
 
-  New-TarGzArchive -SourceDirectory $backendStage -ArchivePath $backendTemporaryArchive
-  if (-not $BackendOnly) {
+  if ($includeFrontend) {
     $frontendTemporaryArchive = Join-Path $publishRoot ([System.IO.Path]::GetFileName($frontendArchive))
     New-TarGzArchive -SourceDirectory $frontendStage -ArchivePath $frontendTemporaryArchive
   }
-  Write-Sha256File -ArchivePath $backendTemporaryArchive
-  if (-not $BackendOnly) {
+  if ($includeBackend) {
+    Write-Sha256File -ArchivePath $backendTemporaryArchive
+  }
+  if ($includeFrontend) {
     Write-Sha256File -ArchivePath $frontendTemporaryArchive
   }
-  Assert-Sha256File -ArchivePath $backendTemporaryArchive
-  if (-not $BackendOnly) {
+  if ($includeBackend) {
+    Assert-Sha256File -ArchivePath $backendTemporaryArchive
+  }
+  if ($includeFrontend) {
     Assert-Sha256File -ArchivePath $frontendTemporaryArchive
   }
 
-  Move-NewFile -Source "$backendTemporaryArchive.sha256" -Destination "$backendArchive.sha256"
-  $publishedOutputs += "$backendArchive.sha256"
-  Move-NewFile -Source $backendTemporaryArchive -Destination $backendArchive
-  $publishedOutputs += $backendArchive
+  if ($includeBackend) {
+    Move-NewFile -Source "$backendTemporaryArchive.sha256" -Destination "$backendArchive.sha256"
+    $publishedOutputs += "$backendArchive.sha256"
+    Move-NewFile -Source $backendTemporaryArchive -Destination $backendArchive
+    $publishedOutputs += $backendArchive
+  }
 
-  if (-not $BackendOnly) {
+  if ($includeFrontend) {
     Move-NewFile -Source "$frontendTemporaryArchive.sha256" -Destination "$frontendArchive.sha256"
     $publishedOutputs += "$frontendArchive.sha256"
     Move-NewFile -Source $frontendTemporaryArchive -Destination $frontendArchive
     $publishedOutputs += $frontendArchive
   }
 
-  Write-Output "Created $backendArchive"
-  Write-Output "Created ${backendArchive}.sha256"
-  if (-not $BackendOnly) {
+  if ($includeBackend) {
+    Write-Output "Created $backendArchive"
+    Write-Output "Created ${backendArchive}.sha256"
+  }
+  if ($includeFrontend) {
     Write-Output "Created $frontendArchive"
     Write-Output "Created ${frontendArchive}.sha256"
   }
@@ -552,7 +600,7 @@ catch {
 }
 finally {
   try {
-    if (-not $BackendOnly) {
+    if ($includeFrontend) {
       if ($null -eq $previousPublicApiUrl) {
         Remove-Item Env:NEXT_PUBLIC_API_URL -ErrorAction SilentlyContinue
       }
