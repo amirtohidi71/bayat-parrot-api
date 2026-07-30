@@ -13,14 +13,14 @@ param(
   [Parameter(ParameterSetName = 'Full')]
   [Parameter(ParameterSetName = 'BackendOnly')]
   [Parameter(ParameterSetName = 'InvalidCombination')]
-  [string]$BackendPath = (Split-Path -Parent $PSScriptRoot),
+  [string]$BackendPath = $null,
 
   [Parameter(ParameterSetName = 'Full')]
   [Parameter(ParameterSetName = 'FrontendOnly')]
   [Parameter(ParameterSetName = 'InvalidCombination')]
-  [string]$FrontendPath = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'bayat-parrot'),
+  [string]$FrontendPath = $null,
 
-  [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'artifacts'),
+  [string]$OutputDirectory = $null,
 
   [Parameter(Mandatory = $true, ParameterSetName = 'BackendOnly')]
   [Parameter(Mandatory = $true, ParameterSetName = 'InvalidCombination')]
@@ -37,6 +37,30 @@ if ($BackendOnly -and $FrontendOnly) {
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$includeBackend = -not $FrontendOnly
+$includeFrontend = -not $BackendOnly
+$needsScriptPath =
+  ($includeBackend -and -not $PSBoundParameters.ContainsKey('BackendPath')) -or
+  ($includeFrontend -and -not $PSBoundParameters.ContainsKey('FrontendPath')) -or
+  -not $PSBoundParameters.ContainsKey('OutputDirectory')
+if ($needsScriptPath) {
+  if ([string]::IsNullOrWhiteSpace($PSCommandPath)) {
+    throw 'Cannot determine the packaging script path for default paths.'
+  }
+  $scriptDirectory = Split-Path -Parent $PSCommandPath
+  $packagingRepositoryPath = Split-Path -Parent $scriptDirectory
+}
+if ($includeBackend -and -not $PSBoundParameters.ContainsKey('BackendPath')) {
+  $BackendPath = $packagingRepositoryPath
+}
+if ($includeFrontend -and -not $PSBoundParameters.ContainsKey('FrontendPath')) {
+  $workspaceRoot = Split-Path -Parent $packagingRepositoryPath
+  $FrontendPath = Join-Path $workspaceRoot 'bayat-parrot'
+}
+if (-not $PSBoundParameters.ContainsKey('OutputDirectory')) {
+  $OutputDirectory = Join-Path $packagingRepositoryPath 'artifacts'
+}
 
 function Invoke-NpmBuild {
   param([Parameter(Mandatory = $true)][string]$Path)
@@ -401,8 +425,6 @@ function Remove-OwnedDirectory {
   }
 }
 
-$includeBackend = -not $FrontendOnly
-$includeFrontend = -not $BackendOnly
 $backendPathResolved = $null
 $frontendPathResolved = $null
 if ($includeBackend) {
