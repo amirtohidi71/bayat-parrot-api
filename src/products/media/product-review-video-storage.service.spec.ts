@@ -1,5 +1,6 @@
 import {
   access,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -11,6 +12,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { ProductReviewVideoStorageService } from './product-review-video-storage.service';
+
+jest.mock('node:fs/promises', () => {
+  const actual =
+    jest.requireActual<typeof import('node:fs/promises')>('node:fs/promises');
+  return {
+    ...actual,
+    chmod: jest.fn(actual.chmod),
+    writeFile: jest.fn(actual.writeFile),
+  };
+});
+
+const chmodMock = jest.mocked(chmod);
+const writeFileMock = jest.mocked(writeFile);
 
 function box(type: string, payload: Uint8Array = Buffer.alloc(0)): Buffer {
   const header = Buffer.alloc(8);
@@ -65,6 +79,7 @@ describe('ProductReviewVideoStorageService', () => {
   let service: ProductReviewVideoStorageService;
 
   beforeEach(async () => {
+    jest.clearAllMocks();
     root = await mkdtemp(join(tmpdir(), 'review-video-storage-'));
     staging = join(root, '.staging');
     await mkdir(staging, { recursive: true });
@@ -107,6 +122,12 @@ describe('ProductReviewVideoStorageService', () => {
       access(join(root, ...prepared.videoPath.split('/'))),
     ).resolves.toBeUndefined();
     const coverFile = join(root, ...prepared.coverPath.split('/'));
+    const videoFile = join(root, ...prepared.videoPath.split('/'));
+    expect(chmodMock).toHaveBeenCalledWith(videoFile, 0o644);
+    expect(writeFileMock).toHaveBeenCalledWith(coverFile, expect.any(Buffer), {
+      flag: 'wx',
+      mode: 0o644,
+    });
     expect((await sharp(await readFile(coverFile)).metadata()).format).toBe(
       'webp',
     );
@@ -157,6 +178,23 @@ describe('ProductReviewVideoStorageService', () => {
     ).rejects.toThrow('Review video cover content is invalid');
     await expect(access(videoPath)).rejects.toBeDefined();
     await expect(access(coverPath)).rejects.toBeDefined();
+    expect(
+      await readdir(join(root, 'product-review-videos', 'videos')),
+    ).toEqual([]);
+  });
+
+  it('fails safely and removes the finalized video when chmod fails', async () => {
+    const videoPath = join(staging, 'video.upload');
+    await writeFile(videoPath, mp4());
+    chmodMock.mockRejectedValueOnce(new Error('simulated chmod failure'));
+
+    await expect(
+      service.prepareReplacement({
+        video: [upload('video', videoPath, 'video.mp4', 'video/mp4')],
+      }),
+    ).rejects.toThrow('Could not store product review video media');
+
+    await expect(access(videoPath)).rejects.toBeDefined();
     expect(
       await readdir(join(root, 'product-review-videos', 'videos')),
     ).toEqual([]);

@@ -7,7 +7,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
   sanitizeProductReviewVideoCover,
@@ -88,6 +88,7 @@ export class ProductReviewVideoStorageService {
     const video = singleFile(files.video, 'video');
     const cover = singleFile(files.cover, 'cover');
     const prepared: PreparedProductReviewVideoMedia = {};
+    const finalizedButUnprepared: PreparedProductReviewVideoMedia = {};
     try {
       await this.ensureDirectories();
       if (video) {
@@ -98,8 +99,11 @@ export class ProductReviewVideoStorageService {
         );
         const name = `${randomUUID()}.mp4`;
         const destination = resolve(this.videoDirectory, name);
+        const videoPath = `product-review-videos/videos/${name}`;
         await rename(video.path, destination);
-        prepared.videoPath = `product-review-videos/videos/${name}`;
+        finalizedButUnprepared.videoPath = videoPath;
+        await chmod(destination, 0o644);
+        prepared.videoPath = videoPath;
         prepared.videoMimeType = 'video/mp4';
       }
       if (cover) {
@@ -118,7 +122,10 @@ export class ProductReviewVideoStorageService {
       }
       return prepared;
     } catch (error) {
-      await this.removeStored(prepared).catch(() => undefined);
+      await this.removeStored({
+        ...prepared,
+        ...finalizedButUnprepared,
+      }).catch(() => undefined);
       if (
         error instanceof BadRequestException ||
         error instanceof InternalServerErrorException
