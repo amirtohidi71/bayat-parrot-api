@@ -8,6 +8,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { ProductReview } from './product-review.entity';
+import { ProductReviewVideo } from './product-review-video.entity';
 
 export enum ProductStatus {
   DRAFT = 'draft',
@@ -176,4 +177,9 @@ export class Product {
 
   @OneToMany(() => ProductReview, (review) => review.product)
   reviews: ProductReview[];
+
+  @OneToMany(() => ProductReviewVideo, (reviewVideo) => reviewVideo.product, {
+    eager: false,
+  })
+  reviewVideos: ProductReviewVideo[];
 }

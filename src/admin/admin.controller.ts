@@ -4,11 +4,14 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -23,12 +26,19 @@ import { ProductStatus } from '../products/entities/product.entity';
 import { UpdateProductReviewStatusDto } from '../products/dto/update-product-review-status.dto';
 import { AdminAuthGuard, AdminTokenPayload } from './guards/admin-auth.guard';
 import { productImageUploadOptions } from './config/product-image-upload.config';
+import { ProductReviewVideosService } from '../products/product-review-videos.service';
+import { ReorderProductReviewVideosDto } from '../products/dto/reorder-product-review-videos.dto';
+import type { ProductReviewVideoUploadFiles } from '../products/media/product-review-video-storage.service';
+import { ProductReviewVideoUploadInterceptor } from '../products/media/product-review-video-upload.interceptor';
 
 type AdminRequest = Request & { admin?: AdminTokenPayload };
 
 @Controller('admin-panel')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly productReviewVideos: ProductReviewVideosService,
+  ) {}
 
   @Post('login')
   login(@Body() adminLoginDto: AdminLoginDto) {
@@ -106,6 +116,53 @@ export class AdminController {
   @UseInterceptors(FileInterceptor('image', productImageUploadOptions))
   uploadProductImage(@Param('id') id: string, @UploadedFile() file?: Express.Multer.File) {
     return this.adminService.uploadProductImage(id, file);
+  }
+
+  @Get('products/:productId/review-videos')
+  @UseGuards(AdminAuthGuard)
+  getProductReviewVideos(
+    @Param('productId', new ParseUUIDPipe({ version: '4' })) productId: string,
+  ) {
+    return this.productReviewVideos.findForAdmin(productId);
+  }
+
+  @Post('products/:productId/review-videos')
+  @UseGuards(AdminAuthGuard)
+  @UseInterceptors(ProductReviewVideoUploadInterceptor)
+  createProductReviewVideo(
+    @Param('productId', new ParseUUIDPipe({ version: '4' })) productId: string,
+    @UploadedFiles() files: ProductReviewVideoUploadFiles = {},
+  ) {
+    return this.productReviewVideos.create(productId, files);
+  }
+
+  @Patch('products/:productId/review-videos/:videoId')
+  @UseGuards(AdminAuthGuard)
+  @UseInterceptors(ProductReviewVideoUploadInterceptor)
+  replaceProductReviewVideo(
+    @Param('productId', new ParseUUIDPipe({ version: '4' })) productId: string,
+    @Param('videoId', new ParseUUIDPipe({ version: '4' })) videoId: string,
+    @UploadedFiles() files: ProductReviewVideoUploadFiles = {},
+  ) {
+    return this.productReviewVideos.replace(productId, videoId, files);
+  }
+
+  @Delete('products/:productId/review-videos/:videoId')
+  @UseGuards(AdminAuthGuard)
+  removeProductReviewVideo(
+    @Param('productId', new ParseUUIDPipe({ version: '4' })) productId: string,
+    @Param('videoId', new ParseUUIDPipe({ version: '4' })) videoId: string,
+  ) {
+    return this.productReviewVideos.remove(productId, videoId);
+  }
+
+  @Put('products/:productId/review-videos/order')
+  @UseGuards(AdminAuthGuard)
+  reorderProductReviewVideos(
+    @Param('productId', new ParseUUIDPipe({ version: '4' })) productId: string,
+    @Body() dto: ReorderProductReviewVideosDto,
+  ) {
+    return this.productReviewVideos.reorder(productId, dto.orderedIds);
   }
 
   @Get('reviews')

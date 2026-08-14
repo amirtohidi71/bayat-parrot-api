@@ -2,12 +2,12 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { BadRequestException, Logger, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { join } from 'path';
 import { AppModule } from './app.module';
+import { configurePublicUploadsStatic } from './common/public-uploads-static';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
-  app.useStaticAssets(join(process.cwd(), 'public', 'uploads'), { prefix: '/uploads' });
+  configurePublicUploadsStatic(app);
 
   const isProduction = process.env.NODE_ENV === 'production';
   const allowedOrigins = new Set<string>();

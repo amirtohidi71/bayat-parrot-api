@@ -146,7 +146,10 @@ describe('Product publication access', () => {
     expect(controllerPrototype.update).toBeUndefined();
     expect(controllerPrototype.remove).toBeUndefined();
 
-    const controller = new ProductsController(productsService as never);
+    const controller = new ProductsController(
+      productsService as never,
+      {} as never,
+    );
     controller.findAll({});
     expect(productsService.findAllPublished).toHaveBeenCalledWith({});
   });
