@@ -9,6 +9,7 @@ import { ProductsModule } from './products/products.module';
 import { OrdersModule } from './orders/orders.module';
 import { CategoriesModule } from './categories/categories.module';
 import { AdminModule } from './admin/admin.module';
+import { BirdPassportsModule } from './bird-passports/bird-passports.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { AdminModule } from './admin/admin.module';
     OrdersModule,
     CategoriesModule,
     AdminModule,
+    BirdPassportsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
