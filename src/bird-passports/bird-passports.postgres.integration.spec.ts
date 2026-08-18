@@ -30,6 +30,7 @@ const describeDatabase = enabled ? describe : describe.skip;
 describeDatabase('Bird Passport PostgreSQL integration', () => {
   let dataSource: DataSource;
   let migrationSql: string;
+  let namesMigrationSql: string;
   let passports: BirdPassportsService;
 
   beforeAll(async () => {
@@ -67,8 +68,19 @@ describeDatabase('Bird Passport PostgreSQL integration', () => {
       ),
       'utf8',
     );
+    namesMigrationSql = await readFile(
+      resolve(
+        process.cwd(),
+        'scripts',
+        'migrations',
+        '20260819-add-bird-passport-names.sql',
+      ),
+      'utf8',
+    );
     await runMigration();
     await runMigration();
+    await runMigration(namesMigrationSql);
+    await runMigration(namesMigrationSql);
     passports = new BirdPassportsService(
       dataSource.getRepository(BirdPassport),
       dataSource,
@@ -117,6 +129,36 @@ describeDatabase('Bird Passport PostgreSQL integration', () => {
        ORDER BY table_name COLLATE "C", ordinal_position`,
     );
     expect(columns).toEqual(expectedColumns());
+
+    const nameColumns = await dataSource.query<
+      Array<{
+        column_name: string;
+        character_maximum_length: number;
+        is_nullable: 'YES' | 'NO';
+        column_default: string | null;
+      }>
+    >(
+      `SELECT column_name, character_maximum_length, is_nullable, column_default
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'bird_passports'
+         AND column_name IN ('ownerFullName', 'birdName')
+       ORDER BY column_name COLLATE "C"`,
+    );
+    expect(nameColumns).toEqual([
+      {
+        column_name: 'birdName',
+        character_maximum_length: 100,
+        is_nullable: 'YES',
+        column_default: null,
+      },
+      {
+        column_name: 'ownerFullName',
+        character_maximum_length: 150,
+        is_nullable: 'YES',
+        column_default: null,
+      },
+    ]);
 
     const enumLabels = await dataSource.query<Array<{ enumlabel: string }>>(
       `SELECT e.enumlabel
@@ -448,11 +490,11 @@ describeDatabase('Bird Passport PostgreSQL integration', () => {
     );
   }
 
-  async function runMigration(): Promise<void> {
+  async function runMigration(sql: string = migrationSql): Promise<void> {
     const runner = dataSource.createQueryRunner();
     await runner.connect();
     try {
-      await runner.query(migrationSql);
+      await runner.query(sql);
     } catch (error) {
       await rollbackFailedMigration(runner);
       throw error;
@@ -492,7 +534,9 @@ function requireDisposableDatabaseUrl(): string {
 
 function passportDto(species: string) {
   return {
+    ownerFullName: 'Integration Owner',
     ownerMobile: '09123456789',
+    birdName: 'Integration Bird',
     birthDate: '2025-01-01',
     species,
     subspecies: 'Integration',
@@ -557,6 +601,8 @@ function expectedColumns() {
     column('bird_passports', 'id', 'uuid', notNull),
     column('bird_passports', 'code', 'character varying', notNull),
     column('bird_passports', 'ownerMobile', 'character varying', notNull),
+    column('bird_passports', 'ownerFullName', 'character varying', nullable),
+    column('bird_passports', 'birdName', 'character varying', nullable),
     column('bird_passports', 'imagePath', 'text', nullable),
     column('bird_passports', 'birthDate', 'date', notNull),
     column('bird_passports', 'species', 'character varying', notNull),

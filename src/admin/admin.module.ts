@@ -26,6 +26,6 @@ import { GodAdminAuthGuard } from './guards/god-admin-auth.guard';
   ],
   providers: [AdminService, AdminAuthGuard, GodAdminService, GodAdminAuthGuard],
   controllers: [AdminController, GodAdminController],
-  exports: [AdminAuthGuard],
+  exports: [AdminAuthGuard, JwtModule],
 })
 export class AdminModule {}

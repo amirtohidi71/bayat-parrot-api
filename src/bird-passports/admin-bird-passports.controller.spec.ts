@@ -26,6 +26,11 @@ import { BirdPassportsService } from './bird-passports.service';
 import { BirdPassportImagesService } from './images/bird-passport-images.service';
 import { BIRD_PASSPORT_IMAGE_MAX_BYTES } from './images/bird-passport-image.types';
 import { AdminBirdPassportNoStoreInterceptor } from './admin-bird-passport-no-store.interceptor';
+import { BirdPassportTaxonomyService } from './bird-passport-taxonomy.service';
+import {
+  BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH,
+  BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
+} from './bird-passport-metadata';
 
 const ID = '11111111-1111-4111-8111-111111111111';
 const RECORD_ID = '22222222-2222-4222-8222-222222222222';
@@ -34,7 +39,9 @@ function passport(overrides: Partial<BirdPassport> = {}): BirdPassport {
   return Object.assign(new BirdPassport(), {
     id: ID,
     code: 'B25543210',
+    ownerFullName: 'Owner Name',
     ownerMobile: '09123456789',
+    birdName: 'Rio',
     birthDate: '2025-01-01',
     species: 'Parrot',
     subspecies: 'Macaw',
@@ -116,13 +123,24 @@ function context() {
       size: 4,
     }),
   };
+  const taxonomy = {
+    list: jest.fn().mockResolvedValue([
+      {
+        value: 'macaw',
+        label: 'ماکائو',
+        subspecies: [{ value: 'blue-gold', label: 'ماکائو آبی طلایی' }],
+      },
+    ]),
+  };
   return {
     controller: new AdminBirdPassportsController(
       passports as never,
       images as never,
+      taxonomy,
     ),
     passports,
     images,
+    taxonomy,
   };
 }
 
@@ -173,7 +191,9 @@ describe('AdminBirdPassportsController', () => {
   it('creates through the typed DTO and never exposes storage or OTP fields', async () => {
     const value = context();
     const dto = {
+      ownerFullName: 'Owner Name',
       ownerMobile: '09123456789',
+      birdName: 'Rio',
       birthDate: '2025-01-01',
       species: 'Parrot',
       subspecies: 'Macaw',
@@ -181,6 +201,10 @@ describe('AdminBirdPassportsController', () => {
     const result = await value.controller.create(dto);
     expect(value.passports.create).toHaveBeenCalledWith(dto);
     expect(result).toMatchObject({ code: 'B25543210', hasImage: true });
+    expect(result).toMatchObject({
+      ownerFullName: 'Owner Name',
+      birdName: 'Rio',
+    });
     expect(result).not.toHaveProperty('imagePath');
     expect(result).not.toHaveProperty('otps');
     expect(JSON.stringify(result)).not.toContain('private');
@@ -199,6 +223,19 @@ describe('AdminBirdPassportsController', () => {
     expect(result.items[0]).not.toHaveProperty('imagePath');
   });
 
+  it('returns only the taxonomy contract from the read-only taxonomy service', async () => {
+    const value = context();
+
+    await expect(value.controller.taxonomy()).resolves.toEqual([
+      {
+        value: 'macaw',
+        label: 'ماکائو',
+        subspecies: [{ value: 'blue-gold', label: 'ماکائو آبی طلایی' }],
+      },
+    ]);
+    expect(value.taxonomy.list).toHaveBeenCalledTimes(1);
+  });
+
   it('returns mapped detail and forwards update/activate/archive', async () => {
     const value = context();
     expect(await value.controller.detail(ID)).toMatchObject({
@@ -207,10 +244,18 @@ describe('AdminBirdPassportsController', () => {
       veterinaryVisits: [],
     });
     await value.controller.update(ID, { species: 'Cockatoo' });
+    await value.controller.update(ID, {
+      ownerFullName: 'New Owner',
+      birdName: 'Coco',
+    });
     await value.controller.activate(ID);
     await value.controller.archive(ID);
     expect(value.passports.updatePassport).toHaveBeenCalledWith(ID, {
       species: 'Cockatoo',
+    });
+    expect(value.passports.updatePassport).toHaveBeenCalledWith(ID, {
+      ownerFullName: 'New Owner',
+      birdName: 'Coco',
     });
     expect(value.passports.activatePassport).toHaveBeenCalledWith(ID);
     expect(value.passports.archivePassport).toHaveBeenCalledWith(ID);
@@ -336,6 +381,10 @@ describe('AdminBirdPassportsController HTTP validation', () => {
       providers: [
         { provide: BirdPassportsService, useValue: httpContext.passports },
         { provide: BirdPassportImagesService, useValue: httpContext.images },
+        {
+          provide: BirdPassportTaxonomyService,
+          useValue: httpContext.taxonomy,
+        },
         AdminAuthGuard,
         AdminBirdPassportNoStoreInterceptor,
       ],
@@ -357,6 +406,12 @@ describe('AdminBirdPassportsController HTTP validation', () => {
   it('rejects HTTP requests without a token', async () => {
     await request(app.getHttpServer())
       .get('/admin-panel/bird-passports')
+      .expect(401);
+  });
+
+  it('rejects unauthenticated taxonomy requests', async () => {
+    await request(app.getHttpServer())
+      .get('/admin-panel/bird-passports/taxonomy')
       .expect(401);
   });
 
@@ -384,6 +439,22 @@ describe('AdminBirdPassportsController HTTP validation', () => {
       .expect('Cache-Control', 'no-store');
   });
 
+  it('returns the exact taxonomy contract to an authenticated admin', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/admin-panel/bird-passports/taxonomy')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200)
+      .expect('Cache-Control', 'no-store');
+
+    expect(response.body).toEqual([
+      {
+        value: 'macaw',
+        label: 'ماکائو',
+        subspecies: [{ value: 'blue-gold', label: 'ماکائو آبی طلایی' }],
+      },
+    ]);
+  });
+
   it('rejects an invalid Passport UUID through ParseUUIDPipe', async () => {
     await request(app.getHttpServer())
       .get('/admin-panel/bird-passports/not-a-uuid')
@@ -403,7 +474,9 @@ describe('AdminBirdPassportsController HTTP validation', () => {
       .post('/admin-panel/bird-passports')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
+        ownerFullName: 'Owner Name',
         ownerMobile: '09123456789',
+        birdName: 'Rio',
         birthDate: '2025-01-01',
         species: 'Parrot',
         subspecies: 'Macaw',
@@ -413,11 +486,42 @@ describe('AdminBirdPassportsController HTTP validation', () => {
       })
       .expect(201);
     expect(httpContext.passports.create).toHaveBeenLastCalledWith({
+      ownerFullName: 'Owner Name',
       ownerMobile: '09123456789',
+      birdName: 'Rio',
       birthDate: '2025-01-01',
       species: 'Parrot',
       subspecies: 'Macaw',
     });
+  });
+
+  it.each([
+    ['blank ownerFullName', { ownerFullName: '   ' }],
+    ['blank birdName', { birdName: '   ' }],
+    [
+      'oversized ownerFullName',
+      {
+        ownerFullName: 'x'.repeat(BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH + 1),
+      },
+    ],
+    [
+      'oversized birdName',
+      { birdName: 'x'.repeat(BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH + 1) },
+    ],
+  ])('rejects %s through HTTP DTO validation', async (_label, override) => {
+    await request(app.getHttpServer())
+      .post('/admin-panel/bird-passports')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        ownerFullName: 'Owner Name',
+        ownerMobile: '09123456789',
+        birdName: 'Rio',
+        birthDate: '2025-01-01',
+        species: 'macaw',
+        subspecies: 'blue-gold',
+        ...override,
+      })
+      .expect(400);
   });
 
   it('strips client sortOrder from child create and update payloads', async () => {

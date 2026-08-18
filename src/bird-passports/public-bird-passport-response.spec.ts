@@ -27,7 +27,9 @@ describe('public Bird Passport response', () => {
     const passport = {
       id: 'passport-internal-id',
       code: 'B25543210',
+      ownerFullName: 'Owner Name',
       ownerMobile: '09123456789',
+      birdName: 'Rio',
       imagePath: 'private-image.webp',
       birthDate: '2025-05-10',
       species: 'Parrot',
@@ -75,6 +77,8 @@ describe('public Bird Passport response', () => {
     ]);
     expect(response).toMatchObject({
       code: 'B25543210',
+      ownerFullName: 'Owner Name',
+      birdName: 'Rio',
       birthDate: '2025-05-10',
       species: 'Parrot',
       subspecies: 'Macaw',

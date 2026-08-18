@@ -43,6 +43,8 @@ const godAdminToken = generalJwt.sign(
 );
 const publicDetail = {
   code: 'B25543210',
+  ownerFullName: 'Owner Name',
+  birdName: 'Rio',
   birthDate: '2025-05-10',
   ageMonths: 15,
   species: 'Parrot',

@@ -7,7 +7,9 @@ export function toAdminPassportSummary(passport: BirdPassport) {
   return {
     id: passport.id,
     code: passport.code,
+    ownerFullName: passport.ownerFullName,
     ownerMobile: passport.ownerMobile,
+    birdName: passport.birdName,
     birthDate: passport.birthDate,
     species: passport.species,
     subspecies: passport.subspecies,

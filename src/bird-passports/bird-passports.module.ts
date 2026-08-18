@@ -12,7 +12,6 @@ import { AdminModule } from '../admin/admin.module';
 import { AdminBirdPassportsController } from './admin-bird-passports.controller';
 import { AdminBirdPassportNoStoreInterceptor } from './admin-bird-passport-no-store.interceptor';
 import { SmsModule } from '../common/sms/sms.module';
-import { JwtModule } from '@nestjs/jwt';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { PublicBirdPassportsController } from './public-bird-passports.controller';
 import { PublicBirdPassportsService } from './public-bird-passports.service';
@@ -29,12 +28,12 @@ import {
 } from './public-bird-passport-request-timing.service';
 import { PublicBirdPassportBackgroundScheduler } from './public-bird-passport-background-scheduler';
 import { PublicBirdPassportSmsDispatchService } from './public-bird-passport-sms-dispatch.service';
+import { BirdPassportTaxonomyService } from './bird-passport-taxonomy.service';
 
 @Module({
   imports: [
     AdminModule,
     SmsModule,
-    JwtModule.register({}),
     ThrottlerModule.forRoot([
       { name: 'default', ttl: 15 * 60 * 1000, limit: 120 },
     ]),
@@ -51,6 +50,7 @@ import { PublicBirdPassportSmsDispatchService } from './public-bird-passport-sms
     BirdPassportsService,
     BirdPassportImageStorageService,
     BirdPassportImagesService,
+    BirdPassportTaxonomyService,
     AdminBirdPassportNoStoreInterceptor,
     PublicBirdPassportsService,
     BirdPassportLookupGrantService,

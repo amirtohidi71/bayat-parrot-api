@@ -13,6 +13,10 @@ import { BirdFeedingRecord } from './bird-feeding-record.entity';
 import { BirdPassportOtp } from './bird-passport-otp.entity';
 import { BirdVaccineRecord } from './bird-vaccine-record.entity';
 import { BirdVeterinaryVisit } from './bird-veterinary-visit.entity';
+import {
+  BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH,
+  BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
+} from '../bird-passport-metadata';
 
 export enum BirdPassportStatus {
   DRAFT = 'draft',
@@ -39,6 +43,20 @@ export class BirdPassport {
 
   @Column({ type: 'varchar', length: 11 })
   ownerMobile: string;
+
+  @Column({
+    type: 'varchar',
+    length: BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
+    nullable: true,
+  })
+  ownerFullName: string | null;
+
+  @Column({
+    type: 'varchar',
+    length: BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH,
+    nullable: true,
+  })
+  birdName: string | null;
 
   @Column({ type: 'text', nullable: true })
   imagePath: string | null;

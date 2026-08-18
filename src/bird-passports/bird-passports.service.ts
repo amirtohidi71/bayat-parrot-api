@@ -34,6 +34,10 @@ import {
   escapePostgresLikePattern,
   normalizeAdminBirdPassportSearch,
 } from './bird-passport-search';
+import {
+  BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH,
+  BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
+} from './bird-passport-metadata';
 
 const FIRST_CODE_NUMBER = 25543210;
 const LAST_CODE_NUMBER = 99999999;
@@ -48,7 +52,17 @@ export class BirdPassportsService {
 
   create(dto: CreateBirdPassportDto): Promise<BirdPassport> {
     assertNotFutureDateOnly(dto.birthDate, 'birthDate');
+    const ownerFullName = this.requiredText(
+      dto.ownerFullName,
+      'ownerFullName',
+      BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
+    );
     const ownerMobile = normalizeBirdPassportMobile(dto.ownerMobile);
+    const birdName = this.requiredText(
+      dto.birdName,
+      'birdName',
+      BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH,
+    );
     const species = this.requiredText(dto.species, 'species');
     const subspecies = this.requiredText(dto.subspecies, 'subspecies');
     return this.dataSource.transaction(async (manager) => {
@@ -82,7 +96,9 @@ export class BirdPassportsService {
       return repository.save(
         repository.create({
           code: `B${digits}`,
+          ownerFullName,
           ownerMobile,
+          birdName,
           birthDate: dto.birthDate,
           species,
           subspecies,
@@ -118,7 +134,7 @@ export class BirdPassportsService {
     const search = normalizeAdminBirdPassportSearch(query.search);
     if (search) {
       builder.andWhere(
-        `(passport.code ILIKE :search ESCAPE '\\' OR passport.species ILIKE :search ESCAPE '\\' OR passport.subspecies ILIKE :search ESCAPE '\\' OR passport.ownerMobile ILIKE :search ESCAPE '\\')`,
+        `(passport.code ILIKE :search ESCAPE '\\' OR passport.ownerFullName ILIKE :search ESCAPE '\\' OR passport.birdName ILIKE :search ESCAPE '\\' OR passport.species ILIKE :search ESCAPE '\\' OR passport.subspecies ILIKE :search ESCAPE '\\' OR passport.ownerMobile ILIKE :search ESCAPE '\\')`,
         { search: `%${escapePostgresLikePattern(search)}%` },
       );
     }
@@ -154,8 +170,22 @@ export class BirdPassportsService {
     dto: UpdateBirdPassportDto,
   ): Promise<BirdPassport> {
     return this.withLockedEditablePassport(id, async (manager, passport) => {
+      if (dto.ownerFullName !== undefined) {
+        passport.ownerFullName = this.requiredText(
+          dto.ownerFullName,
+          'ownerFullName',
+          BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
+        );
+      }
       if (dto.ownerMobile !== undefined) {
         passport.ownerMobile = normalizeBirdPassportMobile(dto.ownerMobile);
+      }
+      if (dto.birdName !== undefined) {
+        passport.birdName = this.requiredText(
+          dto.birdName,
+          'birdName',
+          BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH,
+        );
       }
       if (dto.birthDate !== undefined) {
         assertNotFutureDateOnly(dto.birthDate, 'birthDate');
@@ -174,7 +204,9 @@ export class BirdPassportsService {
   async activatePassport(id: string): Promise<BirdPassport> {
     return this.withLockedEditablePassport(id, async (manager, passport) => {
       if (
+        !passport.ownerFullName?.trim() ||
         !passport.ownerMobile?.trim() ||
+        !passport.birdName?.trim() ||
         !passport.birthDate?.trim() ||
         !passport.species?.trim() ||
         !passport.subspecies?.trim() ||
@@ -464,9 +496,18 @@ export class BirdPassportsService {
     });
   }
 
-  private requiredText(value: string, field: string): string {
+  private requiredText(
+    value: string,
+    field: string,
+    maxLength?: number,
+  ): string {
     const normalized = value.trim();
     if (!normalized) throw new BadRequestException(`${field} is required`);
+    if (maxLength !== undefined && normalized.length > maxLength) {
+      throw new BadRequestException(
+        `${field} must not exceed ${maxLength} characters`,
+      );
+    }
     return normalized;
   }
 }

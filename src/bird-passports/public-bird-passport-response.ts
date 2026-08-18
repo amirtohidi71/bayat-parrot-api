@@ -23,6 +23,8 @@ function sorted<T extends { sortOrder: number; id: string }>(rows: T[]): T[] {
 export function toPublicBirdPassport(passport: BirdPassport) {
   return {
     code: passport.code,
+    ownerFullName: passport.ownerFullName,
+    birdName: passport.birdName,
     birthDate: passport.birthDate,
     ageMonths: calculateBirdAgeMonths(passport.birthDate),
     species: passport.species,

@@ -39,6 +39,7 @@ import { UpdateVeterinaryVisitDto } from './dto/update-veterinary-visit.dto';
 import { BirdPassportImagesService } from './images/bird-passport-images.service';
 import { BIRD_PASSPORT_IMAGE_MAX_BYTES } from './images/bird-passport-image.types';
 import { AdminBirdPassportNoStoreInterceptor } from './admin-bird-passport-no-store.interceptor';
+import { BirdPassportTaxonomyService } from './bird-passport-taxonomy.service';
 
 const uuidPipe = new ParseUUIDPipe({ version: '4' });
 
@@ -49,6 +50,7 @@ export class AdminBirdPassportsController {
   constructor(
     private readonly passports: BirdPassportsService,
     private readonly images: BirdPassportImagesService,
+    private readonly taxonomyService: BirdPassportTaxonomyService,
   ) {}
 
   @Post()
@@ -60,6 +62,11 @@ export class AdminBirdPassportsController {
   async list(@Query() query: AdminListBirdPassportsDto) {
     const result = await this.passports.listPassportsAdmin(query);
     return { ...result, items: result.items.map(toAdminPassportSummary) };
+  }
+
+  @Get('taxonomy')
+  taxonomy() {
+    return this.taxonomyService.list();
   }
 
   @Get(':id')

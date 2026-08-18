@@ -33,7 +33,9 @@ function createContext(options: TestContextOptions = {}) {
   const passport = {
     id: PASSPORT_ID,
     code: CODE,
+    ownerFullName: 'Owner Name',
     ownerMobile: options.phone ?? PHONE,
+    birdName: 'Rio',
     status: options.status ?? BirdPassportStatus.ACTIVE,
     birthDate: '2025-05-10',
     species: 'Parrot',

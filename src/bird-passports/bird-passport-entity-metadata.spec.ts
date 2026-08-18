@@ -4,8 +4,27 @@ import { BirdPassportOtp } from './entities/bird-passport-otp.entity';
 import { BirdPassport } from './entities/bird-passport.entity';
 import { BirdVaccineRecord } from './entities/bird-vaccine-record.entity';
 import { BirdVeterinaryVisit } from './entities/bird-veterinary-visit.entity';
+import {
+  BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH,
+  BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
+} from './bird-passport-metadata';
 
 describe('Bird Passport entity constraint metadata', () => {
+  it.each([
+    ['ownerFullName', BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH],
+    ['birdName', BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH],
+  ])('maps nullable legacy-safe %s metadata', (propertyName, length) => {
+    const column = getMetadataArgsStorage().columns.find(
+      (item) =>
+        item.target === BirdPassport && item.propertyName === propertyName,
+    );
+    expect(column?.options).toMatchObject({
+      type: 'varchar',
+      length,
+      nullable: true,
+    });
+  });
+
   it.each([
     [BirdPassport, 'bird_passports_pkey'],
     [BirdVaccineRecord, 'bird_vaccine_records_pkey'],

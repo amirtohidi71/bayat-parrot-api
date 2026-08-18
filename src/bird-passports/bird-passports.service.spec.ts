@@ -12,12 +12,18 @@ import {
 } from './entities/bird-passport.entity';
 import { BirdVaccineRecord } from './entities/bird-vaccine-record.entity';
 import { BirdVeterinaryVisit } from './entities/bird-veterinary-visit.entity';
+import {
+  BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH,
+  BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
+} from './bird-passport-metadata';
 
 function passport(overrides: Partial<BirdPassport> = {}): BirdPassport {
   return Object.assign(new BirdPassport(), {
     id: 'passport-1',
     code: 'B25543210',
+    ownerFullName: 'Owner Name',
     ownerMobile: '09123456789',
+    birdName: 'Rio',
     birthDate: '2025-01-01',
     species: 'Parrot',
     subspecies: 'Macaw',
@@ -106,7 +112,9 @@ function createContext(
 
 describe('BirdPassportsService', () => {
   const createDto = {
+    ownerFullName: ' Owner Name ',
     ownerMobile: '+989123456789',
+    birdName: ' Rio ',
     birthDate: '2025-01-01',
     species: ' Parrot ',
     subspecies: ' Macaw ',
@@ -121,7 +129,9 @@ describe('BirdPassportsService', () => {
     );
     expect(result).toMatchObject({
       code: 'B25543210',
+      ownerFullName: 'Owner Name',
       ownerMobile: '09123456789',
+      birdName: 'Rio',
       status: BirdPassportStatus.DRAFT,
       imagePath: null,
       species: 'Parrot',
@@ -156,12 +166,16 @@ describe('BirdPassportsService', () => {
     const row = passport({ imagePath: '/private/image.webp' });
     const context = createContext({ passports: [row] });
     const result = await context.service.updatePassport(row.id, {
+      ownerFullName: ' New Owner ',
       ownerMobile: '۰۹۹۱۲۳۴۵۶۷۸',
+      birdName: ' Coco ',
       species: ' Cockatoo ',
     });
     expect(result).toMatchObject({
       code: 'B25543210',
+      ownerFullName: 'New Owner',
       ownerMobile: '09912345678',
+      birdName: 'Coco',
       species: 'Cockatoo',
       status: BirdPassportStatus.DRAFT,
       imagePath: '/private/image.webp',
@@ -284,6 +298,8 @@ describe('BirdPassportsService', () => {
   });
 
   it.each([
+    [{ ...createDto, ownerFullName: '   ' }, 'ownerFullName'],
+    [{ ...createDto, birdName: '   ' }, 'birdName'],
     [{ ...createDto, species: '   ' }, 'species'],
     [{ ...createDto, subspecies: '   ' }, 'subspecies'],
   ])('rejects whitespace-only create fields', (input, field) => {
@@ -292,15 +308,17 @@ describe('BirdPassportsService', () => {
     expect(context.dataSource.transaction).not.toHaveBeenCalled();
   });
 
-  it.each([{ species: '   ' }, { subspecies: '   ' }])(
-    'rejects whitespace-only update fields',
-    async (dto) => {
-      const context = createContext();
-      await expect(
-        context.service.updatePassport('passport-1', dto),
-      ).rejects.toBeInstanceOf(BadRequestException);
-    },
-  );
+  it.each([
+    { ownerFullName: '   ' },
+    { birdName: '   ' },
+    { species: '   ' },
+    { subspecies: '   ' },
+  ])('rejects whitespace-only update fields', async (dto) => {
+    const context = createContext();
+    await expect(
+      context.service.updatePassport('passport-1', dto),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
 
   it('trims Persian species values', async () => {
     const context = createContext();
@@ -311,6 +329,35 @@ describe('BirdPassportsService', () => {
     });
     expect(result.species).toBe('کاسکو');
     expect(result.subspecies).toBe('دم قرمز');
+  });
+
+  it('trims Persian owner and bird names', async () => {
+    const context = createContext();
+    const result = await context.service.create({
+      ...createDto,
+      ownerFullName: '  علی رضایی  ',
+      birdName: '  آبی  ',
+    });
+    expect(result.ownerFullName).toBe('علی رضایی');
+    expect(result.birdName).toBe('آبی');
+  });
+
+  it.each([
+    [
+      'ownerFullName',
+      BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
+      'ownerFullName',
+    ],
+    ['birdName', BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH, 'birdName'],
+  ])('rejects an oversized %s', (field, maxLength, messageField) => {
+    const context = createContext();
+    expect(() =>
+      context.service.create({
+        ...createDto,
+        [field]: 'x'.repeat(maxLength + 1),
+      }),
+    ).toThrow(`${messageField} must not exceed ${maxLength} characters`);
+    expect(context.dataSource.transaction).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -345,7 +392,9 @@ describe('BirdPassportsService', () => {
   });
 
   it.each([
+    ['ownerFullName', '   '],
     ['ownerMobile', '   '],
+    ['birdName', '   '],
     ['birthDate', '   '],
     ['species', '   '],
     ['subspecies', '   '],
@@ -503,6 +552,16 @@ describe('BirdPassportsService', () => {
     );
     expect(context.passports.queryBuilder.andWhere).toHaveBeenCalledWith(
       expect.stringContaining("passport.ownerMobile ILIKE :search ESCAPE '\\'"),
+      { search: '%B255%' },
+    );
+    expect(context.passports.queryBuilder.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "passport.ownerFullName ILIKE :search ESCAPE '\\'",
+      ),
+      { search: '%B255%' },
+    );
+    expect(context.passports.queryBuilder.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining("passport.birdName ILIKE :search ESCAPE '\\'"),
       { search: '%B255%' },
     );
     expect(result).toMatchObject({ total: 1, page: 2, limit: 10 });
