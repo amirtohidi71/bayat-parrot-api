@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -20,7 +20,11 @@ import {
   PublicBirdPassportSmsDispatch,
   PublicBirdPassportSmsDispatchService,
 } from './public-bird-passport-sms-dispatch.service';
-import { PublicBirdPassportsService } from './public-bird-passports.service';
+import {
+  PUBLIC_OTP_OWNER_MOBILE_MISMATCH_CODE,
+  PUBLIC_OTP_OWNER_MOBILE_MISMATCH_MESSAGE,
+  PublicBirdPassportsService,
+} from './public-bird-passports.service';
 
 const enabled =
   process.env.BIRD_PASSPORT_RUN_DB_TESTS === '1' &&
@@ -411,6 +415,31 @@ describeDatabase('Bird Passport PostgreSQL integration', () => {
       .findOneByOrFail({ id: attemptOtp.id });
     expect(exhausted).toMatchObject({ attempts: 5, consumed: true });
   }, 30_000);
+
+  it('rejects an active passport mobile mismatch without OTP persistence or SMS', async () => {
+    const passport = await passports.create(passportDto('OTP mismatch'));
+    await dataSource
+      .getRepository(BirdPassport)
+      .update({ id: passport.id }, { status: BirdPassportStatus.ACTIVE });
+    const deliveries: PublicBirdPassportSmsDispatch[] = [];
+    const service = publicOtpService(deliveries);
+
+    const error = await service
+      .requestOtp({ code: passport.code, ownerMobile: '09999999999' })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect((error as ForbiddenException).getResponse()).toEqual({
+      code: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_CODE,
+      message: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_MESSAGE,
+    });
+    expect(deliveries).toHaveLength(0);
+    await expect(
+      dataSource.getRepository(BirdPassportOtp).count({
+        where: { birdPassportId: passport.id },
+      }),
+    ).resolves.toBe(0);
+  });
 
   it('rejects a same-named invalid index during rerun', async () => {
     await dataSource.query(

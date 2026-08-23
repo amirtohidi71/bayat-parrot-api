@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/require-await -- Supertest and deferred-promise mocks expose framework any/async boundaries. */
 import {
+  ForbiddenException,
   INestApplication,
   NotFoundException,
   ValidationPipe,
@@ -20,6 +21,8 @@ import { PublicBirdPassportSmsDispatchService } from './public-bird-passport-sms
 import { PublicBirdPassportThrottlerGuard } from './public-bird-passport-throttler.guard';
 import { PublicBirdPassportsController } from './public-bird-passports.controller';
 import {
+  PUBLIC_OTP_OWNER_MOBILE_MISMATCH_CODE,
+  PUBLIC_OTP_OWNER_MOBILE_MISMATCH_MESSAGE,
   PUBLIC_OTP_REQUEST_MESSAGE,
   PublicBirdPassportsService,
 } from './public-bird-passports.service';
@@ -190,6 +193,30 @@ describe('PublicBirdPassportsController HTTP', () => {
     expect(sms.sendOtp).toHaveBeenCalled();
     releaseSms!();
     await smsPending;
+  });
+
+  it('exposes a stable owner-mobile mismatch contract without sensitive fields', async () => {
+    passports.requestOtp.mockRejectedValueOnce(
+      new ForbiddenException({
+        code: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_CODE,
+        message: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_MESSAGE,
+      }),
+    );
+
+    const response = await request(app.getHttpServer())
+      .post('/bird-passports/public/request-otp')
+      .set('X-Forwarded-For', '198.51.100.12')
+      .send(requestBody)
+      .expect(403)
+      .expect('Cache-Control', 'no-store');
+
+    expect(response.body).toEqual({
+      code: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_CODE,
+      message: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_MESSAGE,
+    });
+    expect(JSON.stringify(response.body)).not.toMatch(
+      /ownerMobile|ownerFullName|passportId|image|otp|sms|09123456789/i,
+    );
   });
 
   it.each([

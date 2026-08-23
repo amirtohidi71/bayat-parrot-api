@@ -1,6 +1,10 @@
 /* eslint-disable @typescript-eslint/require-await -- In-memory Jest repositories implement TypeORM's asynchronous interface. */
 import * as bcrypt from 'bcrypt';
-import { NotFoundException, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { BirdPassportOtp } from './entities/bird-passport-otp.entity';
 import {
   BirdPassport,
@@ -8,6 +12,8 @@ import {
 } from './entities/bird-passport.entity';
 import {
   PUBLIC_OTP_FAILURE_MESSAGE,
+  PUBLIC_OTP_OWNER_MOBILE_MISMATCH_CODE,
+  PUBLIC_OTP_OWNER_MOBILE_MISMATCH_MESSAGE,
   PUBLIC_OTP_REQUEST_MESSAGE,
   PublicBirdPassportsService,
 } from './public-bird-passports.service';
@@ -237,17 +243,16 @@ describe('PublicBirdPassportsService request OTP', () => {
     expect(stored.expiresAt.getTime() - before).toBeLessThanOrEqual(121_000);
     expect(value.timing.waitForFloor).toHaveBeenCalledWith(100);
     expect(value.cleanup.schedule).toHaveBeenCalled();
-    expect(value.candidates.create.mock.invocationCallOrder[0]).toBeLessThan(
-      value.manager.query.mock.invocationCallOrder[0],
-    );
     expect(value.timing.waitForFloor.mock.invocationCallOrder[0]).toBeLessThan(
       value.dispatch.dispatch.mock.invocationCallOrder[0],
+    );
+    expect(value.manager.query.mock.invocationCallOrder[0]).toBeLessThan(
+      value.candidates.create.mock.invocationCallOrder[0],
     );
   });
 
   it.each([
     ['nonexistent code', { passportExists: false }],
-    ['wrong mobile', { phone: '09999999999' }],
     ['draft passport', { status: BirdPassportStatus.DRAFT }],
     ['archived passport', { status: BirdPassportStatus.ARCHIVED }],
   ])(
@@ -259,17 +264,42 @@ describe('PublicBirdPassportsService request OTP', () => {
       });
       expect(value.dispatch.dispatch).not.toHaveBeenCalled();
       expect(value.otpRows).toHaveLength(0);
-      expect(value.candidates.create).toHaveBeenCalledTimes(1);
+      expect(value.candidates.create).not.toHaveBeenCalled();
       expect(value.timing.waitForFloor).toHaveBeenCalledWith(100);
     },
   );
+
+  it('returns an explicit safe error for an active passport owner-mobile mismatch', async () => {
+    const realOwnerMobile = '09999999999';
+    const value = createContext({ phone: realOwnerMobile });
+
+    const error = await value.service
+      .requestOtp(requestDto)
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect((error as ForbiddenException).getStatus()).toBe(403);
+    expect((error as ForbiddenException).getResponse()).toEqual({
+      code: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_CODE,
+      message: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_MESSAGE,
+    });
+    expect(
+      JSON.stringify((error as ForbiddenException).getResponse()),
+    ).not.toContain(realOwnerMobile);
+    expect(value.candidates.create).not.toHaveBeenCalled();
+    expect(value.dispatch.dispatch).not.toHaveBeenCalled();
+    expect(value.otpRows).toHaveLength(0);
+    expect(value.manager.query).not.toHaveBeenCalled();
+    expect(value.timing.waitForFloor).toHaveBeenCalledWith(100);
+    expect(value.cleanup.schedule).toHaveBeenCalled();
+  });
 
   it('enforces the 120-second cooldown with a generic result', async () => {
     const value = createContext();
     await value.seedOtp('11111', { createdAt: new Date() });
     await value.service.requestOtp(requestDto);
     expect(value.dispatch.dispatch).not.toHaveBeenCalled();
-    expect(value.candidates.create).toHaveBeenCalledTimes(1);
+    expect(value.candidates.create).not.toHaveBeenCalled();
     expect(value.timing.waitForFloor).toHaveBeenCalledWith(100);
     expect(
       value.otpRepository.findOne.mock.calls.map(
@@ -290,7 +320,7 @@ describe('PublicBirdPassportsService request OTP', () => {
     await value.service.requestOtp(requestDto);
     expect(value.dispatch.dispatch).not.toHaveBeenCalled();
     expect(value.otpRows).toHaveLength(5);
-    expect(value.candidates.create).toHaveBeenCalledTimes(1);
+    expect(value.candidates.create).not.toHaveBeenCalled();
     expect(value.timing.waitForFloor).toHaveBeenCalledWith(100);
     expect(
       value.otpRepository.count.mock.calls.map(
@@ -317,7 +347,7 @@ describe('PublicBirdPassportsService request OTP', () => {
       value.service.requestOtp(requestDto),
     ]);
     expect(value.dispatch.dispatch).toHaveBeenCalledTimes(1);
-    expect(value.candidates.create).toHaveBeenCalledTimes(2);
+    expect(value.candidates.create).toHaveBeenCalledTimes(1);
     expect(value.manager.query).toHaveBeenCalledWith(
       'SELECT pg_advisory_xact_lock(hashtext($1))',
       [`bird-passport-otp:${PASSPORT_ID}:${PHONE}`],

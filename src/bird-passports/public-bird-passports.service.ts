@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -26,6 +27,10 @@ import { PublicBirdPassportSmsDispatchService } from './public-bird-passport-sms
 export const PUBLIC_OTP_REQUEST_MESSAGE =
   'If the provided information is correct, a verification code will be sent.';
 export const PUBLIC_OTP_FAILURE_MESSAGE = 'Verification failed.';
+export const PUBLIC_OTP_OWNER_MOBILE_MISMATCH_CODE =
+  'BIRD_PASSPORT_OWNER_MOBILE_MISMATCH';
+export const PUBLIC_OTP_OWNER_MOBILE_MISMATCH_MESSAGE =
+  'شماره موبایل با شماره ثبت‌شده برای این شناسنامه همخوانی ندارد.';
 
 const OTP_TTL_SECONDS = 120;
 const OTP_COOLDOWN_SECONDS = 120;
@@ -62,19 +67,23 @@ export class PublicBirdPassportsService {
     const startedAt = this.timing.start();
     let prepared: PreparedOtp | null = null;
     try {
-      const candidate = await this.candidates.create();
       prepared = await this.dataSource.transaction<PreparedOtp | null>(
         async (manager) => {
           const passport = await manager.getRepository(BirdPassport).findOne({
             where: {
               code: dto.code,
-              ownerMobile: dto.ownerMobile,
               status: BirdPassportStatus.ACTIVE,
             },
             select: { id: true, ownerMobile: true },
             lock: { mode: 'pessimistic_read' },
           });
           if (!passport) return null;
+          if (passport.ownerMobile !== dto.ownerMobile) {
+            throw new ForbiddenException({
+              code: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_CODE,
+              message: PUBLIC_OTP_OWNER_MOBILE_MISMATCH_MESSAGE,
+            });
+          }
 
           await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
             `bird-passport-otp:${passport.id}:${dto.ownerMobile}`,
@@ -102,6 +111,7 @@ export class PublicBirdPassportsService {
           );
           if (recentCount >= OTP_WINDOW_LIMIT) return null;
 
+          const candidate = await this.candidates.create();
           await repository.update(
             {
               birdPassportId: passport.id,
