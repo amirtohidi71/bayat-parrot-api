@@ -20,6 +20,7 @@ import {
 import { AdminBirdPassportsController } from './admin-bird-passports.controller';
 import {
   BirdPassport,
+  BirdPassportGender,
   BirdPassportStatus,
 } from './entities/bird-passport.entity';
 import { BirdPassportsService } from './bird-passports.service';
@@ -43,6 +44,7 @@ function passport(overrides: Partial<BirdPassport> = {}): BirdPassport {
     ownerMobile: '09123456789',
     birdName: 'Rio',
     birthDate: '2025-01-01',
+    gender: BirdPassportGender.UNKNOWN,
     species: 'Parrot',
     subspecies: 'Macaw',
     imagePath: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.webp',
@@ -195,6 +197,7 @@ describe('AdminBirdPassportsController', () => {
       ownerMobile: '09123456789',
       birdName: 'Rio',
       birthDate: '2025-01-01',
+      gender: BirdPassportGender.MALE,
       species: 'Parrot',
       subspecies: 'Macaw',
     };
@@ -204,6 +207,7 @@ describe('AdminBirdPassportsController', () => {
     expect(result).toMatchObject({
       ownerFullName: 'Owner Name',
       birdName: 'Rio',
+      gender: BirdPassportGender.UNKNOWN,
     });
     expect(result).not.toHaveProperty('imagePath');
     expect(result).not.toHaveProperty('otps');
@@ -239,6 +243,7 @@ describe('AdminBirdPassportsController', () => {
   it('returns mapped detail and forwards update/activate/archive', async () => {
     const value = context();
     expect(await value.controller.detail(ID)).toMatchObject({
+      gender: BirdPassportGender.UNKNOWN,
       vaccines: [],
       feedings: [],
       veterinaryVisits: [],
@@ -247,6 +252,7 @@ describe('AdminBirdPassportsController', () => {
     await value.controller.update(ID, {
       ownerFullName: 'New Owner',
       birdName: 'Coco',
+      gender: BirdPassportGender.FEMALE,
     });
     await value.controller.activate(ID);
     await value.controller.archive(ID);
@@ -256,6 +262,7 @@ describe('AdminBirdPassportsController', () => {
     expect(value.passports.updatePassport).toHaveBeenCalledWith(ID, {
       ownerFullName: 'New Owner',
       birdName: 'Coco',
+      gender: BirdPassportGender.FEMALE,
     });
     expect(value.passports.activatePassport).toHaveBeenCalledWith(ID);
     expect(value.passports.archivePassport).toHaveBeenCalledWith(ID);
@@ -478,6 +485,7 @@ describe('AdminBirdPassportsController HTTP validation', () => {
         ownerMobile: '09123456789',
         birdName: 'Rio',
         birthDate: '2025-01-01',
+        gender: BirdPassportGender.MALE,
         species: 'Parrot',
         subspecies: 'Macaw',
         code: 'B99999999',
@@ -490,6 +498,7 @@ describe('AdminBirdPassportsController HTTP validation', () => {
       ownerMobile: '09123456789',
       birdName: 'Rio',
       birthDate: '2025-01-01',
+      gender: BirdPassportGender.MALE,
       species: 'Parrot',
       subspecies: 'Macaw',
     });
@@ -517,6 +526,7 @@ describe('AdminBirdPassportsController HTTP validation', () => {
         ownerMobile: '09123456789',
         birdName: 'Rio',
         birthDate: '2025-01-01',
+        gender: BirdPassportGender.MALE,
         species: 'macaw',
         subspecies: 'blue-gold',
         ...override,
@@ -549,6 +559,44 @@ describe('AdminBirdPassportsController HTTP validation', () => {
       RECORD_ID,
       { vaccineName: 'B' },
     );
+  });
+
+  it.each([
+    ['missing gender', undefined],
+    ['invalid gender', 'OTHER'],
+  ])('rejects %s through HTTP DTO validation', async (_label, gender) => {
+    const body: Record<string, unknown> = {
+      ownerFullName: 'Owner Name',
+      ownerMobile: '09123456789',
+      birdName: 'Rio',
+      birthDate: '2025-01-01',
+      species: 'macaw',
+      subspecies: 'blue-gold',
+    };
+    if (gender !== undefined) body.gender = gender;
+
+    await request(app.getHttpServer())
+      .post('/admin-panel/bird-passports')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send(body)
+      .expect(400);
+  });
+
+  it('accepts a valid gender update and rejects an arbitrary value', async () => {
+    await request(app.getHttpServer())
+      .patch(`/admin-panel/bird-passports/${ID}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ gender: BirdPassportGender.FEMALE })
+      .expect(200);
+    expect(httpContext.passports.updatePassport).toHaveBeenLastCalledWith(ID, {
+      gender: BirdPassportGender.FEMALE,
+    });
+
+    await request(app.getHttpServer())
+      .patch(`/admin-panel/bird-passports/${ID}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ gender: 'OTHER' })
+      .expect(400);
   });
 
   it('enforces query boundaries through the production-like ValidationPipe', async () => {

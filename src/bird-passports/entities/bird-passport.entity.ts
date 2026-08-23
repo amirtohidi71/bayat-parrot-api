@@ -24,6 +24,12 @@ export enum BirdPassportStatus {
   ARCHIVED = 'archived',
 }
 
+export enum BirdPassportGender {
+  MALE = 'MALE',
+  FEMALE = 'FEMALE',
+  UNKNOWN = 'UNKNOWN',
+}
+
 @Entity('bird_passports')
 @Unique('UQ_bird_passports_code', ['code'])
 @Index('IDX_bird_passports_status', ['status'])
@@ -63,6 +69,14 @@ export class BirdPassport {
 
   @Column({ type: 'date' })
   birthDate: string;
+
+  @Column({
+    type: 'enum',
+    enum: BirdPassportGender,
+    enumName: 'bird_passports_gender_enum',
+    default: BirdPassportGender.UNKNOWN,
+  })
+  gender: BirdPassportGender;
 
   @Column({ type: 'varchar' })
   species: string;

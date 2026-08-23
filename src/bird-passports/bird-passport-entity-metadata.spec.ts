@@ -1,7 +1,10 @@
 import { getMetadataArgsStorage } from 'typeorm';
 import { BirdFeedingRecord } from './entities/bird-feeding-record.entity';
 import { BirdPassportOtp } from './entities/bird-passport-otp.entity';
-import { BirdPassport } from './entities/bird-passport.entity';
+import {
+  BirdPassport,
+  BirdPassportGender,
+} from './entities/bird-passport.entity';
 import { BirdVaccineRecord } from './entities/bird-vaccine-record.entity';
 import { BirdVeterinaryVisit } from './entities/bird-veterinary-visit.entity';
 import {
@@ -10,6 +13,24 @@ import {
 } from './bird-passport-metadata';
 
 describe('Bird Passport entity constraint metadata', () => {
+  it('maps gender to the strict PostgreSQL enum with a non-null UNKNOWN default', () => {
+    const column = getMetadataArgsStorage().columns.find(
+      (item) => item.target === BirdPassport && item.propertyName === 'gender',
+    );
+    expect(column?.options).toMatchObject({
+      type: 'enum',
+      enum: BirdPassportGender,
+      enumName: 'bird_passports_gender_enum',
+      default: BirdPassportGender.UNKNOWN,
+    });
+    expect(column?.options.nullable).not.toBe(true);
+    expect(Object.values(BirdPassportGender)).toEqual([
+      'MALE',
+      'FEMALE',
+      'UNKNOWN',
+    ]);
+  });
+
   it.each([
     ['ownerFullName', BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH],
     ['birdName', BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH],

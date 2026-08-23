@@ -11,6 +11,7 @@ export function toAdminPassportSummary(passport: BirdPassport) {
     ownerMobile: passport.ownerMobile,
     birdName: passport.birdName,
     birthDate: passport.birthDate,
+    gender: passport.gender,
     species: passport.species,
     subspecies: passport.subspecies,
     status: passport.status,

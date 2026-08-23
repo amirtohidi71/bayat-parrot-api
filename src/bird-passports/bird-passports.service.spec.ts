@@ -8,6 +8,7 @@ import { BirdPassportsService } from './bird-passports.service';
 import { BirdFeedingRecord } from './entities/bird-feeding-record.entity';
 import {
   BirdPassport,
+  BirdPassportGender,
   BirdPassportStatus,
 } from './entities/bird-passport.entity';
 import { BirdVaccineRecord } from './entities/bird-vaccine-record.entity';
@@ -25,6 +26,7 @@ function passport(overrides: Partial<BirdPassport> = {}): BirdPassport {
     ownerMobile: '09123456789',
     birdName: 'Rio',
     birthDate: '2025-01-01',
+    gender: BirdPassportGender.UNKNOWN,
     species: 'Parrot',
     subspecies: 'Macaw',
     imagePath: null,
@@ -116,6 +118,7 @@ describe('BirdPassportsService', () => {
     ownerMobile: '+989123456789',
     birdName: ' Rio ',
     birthDate: '2025-01-01',
+    gender: BirdPassportGender.MALE,
     species: ' Parrot ',
     subspecies: ' Macaw ',
   };
@@ -132,12 +135,23 @@ describe('BirdPassportsService', () => {
       ownerFullName: 'Owner Name',
       ownerMobile: '09123456789',
       birdName: 'Rio',
+      gender: BirdPassportGender.MALE,
       status: BirdPassportStatus.DRAFT,
       imagePath: null,
       species: 'Parrot',
       subspecies: 'Macaw',
     });
     expect(result).not.toHaveProperty('accessToken');
+  });
+
+  it.each([
+    BirdPassportGender.MALE,
+    BirdPassportGender.FEMALE,
+    BirdPassportGender.UNKNOWN,
+  ])('creates a passport with gender %s', async (gender) => {
+    const context = createContext();
+    const result = await context.service.create({ ...createDto, gender });
+    expect(result.gender).toBe(gender);
   });
 
   it('does not accept client code, status or imagePath through the create DTO shape', async () => {
@@ -169,6 +183,7 @@ describe('BirdPassportsService', () => {
       ownerFullName: ' New Owner ',
       ownerMobile: '۰۹۹۱۲۳۴۵۶۷۸',
       birdName: ' Coco ',
+      gender: BirdPassportGender.FEMALE,
       species: ' Cockatoo ',
     });
     expect(result).toMatchObject({
@@ -176,6 +191,7 @@ describe('BirdPassportsService', () => {
       ownerFullName: 'New Owner',
       ownerMobile: '09912345678',
       birdName: 'Coco',
+      gender: BirdPassportGender.FEMALE,
       species: 'Cockatoo',
       status: BirdPassportStatus.DRAFT,
       imagePath: '/private/image.webp',

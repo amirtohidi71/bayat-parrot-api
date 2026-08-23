@@ -100,6 +100,7 @@ export class BirdPassportsService {
           ownerMobile,
           birdName,
           birthDate: dto.birthDate,
+          gender: dto.gender,
           species,
           subspecies,
           imagePath: null,
@@ -190,6 +191,9 @@ export class BirdPassportsService {
       if (dto.birthDate !== undefined) {
         assertNotFutureDateOnly(dto.birthDate, 'birthDate');
         passport.birthDate = dto.birthDate;
+      }
+      if (dto.gender !== undefined) {
+        passport.gender = dto.gender;
       }
       if (dto.species !== undefined) {
         passport.species = this.requiredText(dto.species, 'species');

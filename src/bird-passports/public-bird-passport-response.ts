@@ -26,6 +26,7 @@ export function toPublicBirdPassport(passport: BirdPassport) {
     ownerFullName: passport.ownerFullName,
     birdName: passport.birdName,
     birthDate: passport.birthDate,
+    gender: passport.gender,
     ageMonths: calculateBirdAgeMonths(passport.birthDate),
     species: passport.species,
     subspecies: passport.subspecies,

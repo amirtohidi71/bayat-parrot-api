@@ -8,6 +8,7 @@ import {
 import { BirdPassportOtp } from './entities/bird-passport-otp.entity';
 import {
   BirdPassport,
+  BirdPassportGender,
   BirdPassportStatus,
 } from './entities/bird-passport.entity';
 import {
@@ -44,6 +45,7 @@ function createContext(options: TestContextOptions = {}) {
     birdName: 'Rio',
     status: options.status ?? BirdPassportStatus.ACTIVE,
     birthDate: '2025-05-10',
+    gender: BirdPassportGender.UNKNOWN,
     species: 'Parrot',
     subspecies: 'Macaw',
     imagePath: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.webp',

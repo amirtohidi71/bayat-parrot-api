@@ -1,4 +1,7 @@
-import { BirdPassport } from './entities/bird-passport.entity';
+import {
+  BirdPassport,
+  BirdPassportGender,
+} from './entities/bird-passport.entity';
 import {
   calculateBirdAgeMonths,
   toPublicBirdPassport,
@@ -32,6 +35,7 @@ describe('public Bird Passport response', () => {
       birdName: 'Rio',
       imagePath: 'private-image.webp',
       birthDate: '2025-05-10',
+      gender: BirdPassportGender.FEMALE,
       species: 'Parrot',
       subspecies: 'Macaw',
       status: 'active',
@@ -80,6 +84,7 @@ describe('public Bird Passport response', () => {
       ownerFullName: 'Owner Name',
       birdName: 'Rio',
       birthDate: '2025-05-10',
+      gender: BirdPassportGender.FEMALE,
       species: 'Parrot',
       subspecies: 'Macaw',
       hasImage: true,

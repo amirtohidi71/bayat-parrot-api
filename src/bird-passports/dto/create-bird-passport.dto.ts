@@ -1,8 +1,15 @@
-import { IsNotEmpty, IsString, Matches, MaxLength } from 'class-validator';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 import {
   BIRD_PASSPORT_BIRD_NAME_MAX_LENGTH,
   BIRD_PASSPORT_OWNER_FULL_NAME_MAX_LENGTH,
 } from '../bird-passport-metadata';
+import { BirdPassportGender } from '../entities/bird-passport.entity';
 
 export class CreateBirdPassportDto {
   @IsString()
@@ -29,6 +36,9 @@ export class CreateBirdPassportDto {
     message: 'birthDate must use YYYY-MM-DD format',
   })
   birthDate: string;
+
+  @IsEnum(BirdPassportGender)
+  gender: BirdPassportGender;
 
   @IsString()
   @IsNotEmpty()

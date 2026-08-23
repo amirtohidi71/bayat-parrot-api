@@ -11,6 +11,7 @@ import {
 } from './entities/bird-passport-otp.entity';
 import {
   BirdPassport,
+  BirdPassportGender,
   BirdPassportStatus,
 } from './entities/bird-passport.entity';
 import { BirdVaccineRecord } from './entities/bird-vaccine-record.entity';
@@ -35,6 +36,8 @@ describeDatabase('Bird Passport PostgreSQL integration', () => {
   let dataSource: DataSource;
   let migrationSql: string;
   let namesMigrationSql: string;
+  let genderMigrationSql: string;
+  let migratedLegacyGender: string;
   let passports: BirdPassportsService;
 
   beforeAll(async () => {
@@ -81,10 +84,35 @@ describeDatabase('Bird Passport PostgreSQL integration', () => {
       ),
       'utf8',
     );
+    genderMigrationSql = await readFile(
+      resolve(
+        process.cwd(),
+        'scripts',
+        'migrations',
+        '20260824-add-bird-passport-gender.sql',
+      ),
+      'utf8',
+    );
     await runMigration();
     await runMigration();
     await runMigration(namesMigrationSql);
     await runMigration(namesMigrationSql);
+    await dataSource.query(
+      `INSERT INTO public.bird_passports
+         (code, "ownerMobile", "birthDate", species, subspecies)
+       VALUES
+         ('B25543210', '09123456789', '2025-01-01', 'Legacy', 'Legacy')`,
+    );
+    await runMigration(genderMigrationSql);
+    migratedLegacyGender = readFirstTextColumn(
+      await dataSource.query(
+        `SELECT gender::text AS gender
+         FROM public.bird_passports
+         WHERE code = 'B25543210'`,
+      ),
+      'gender',
+    );
+    await runMigration(genderMigrationSql);
     passports = new BirdPassportsService(
       dataSource.getRepository(BirdPassport),
       dataSource,
@@ -176,6 +204,47 @@ describeDatabase('Bird Passport PostgreSQL integration', () => {
       'archived',
     ]);
 
+    const genderEnumLabels = await dataSource.query<
+      Array<{ enumlabel: string }>
+    >(
+      `SELECT e.enumlabel
+       FROM pg_catalog.pg_enum e
+       WHERE e.enumtypid = 'public.bird_passports_gender_enum'::regtype
+       ORDER BY e.enumsortorder`,
+    );
+    expect(genderEnumLabels.map((row) => row.enumlabel)).toEqual([
+      'MALE',
+      'FEMALE',
+      'UNKNOWN',
+    ]);
+
+    const [genderColumn] = await dataSource.query<
+      Array<{
+        type: string;
+        notNull: boolean;
+        defaultExpression: string | null;
+      }>
+    >(
+      `SELECT
+         pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,
+         a.attnotnull AS "notNull",
+         pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS "defaultExpression"
+       FROM pg_catalog.pg_attribute a
+       LEFT JOIN pg_catalog.pg_attrdef d
+         ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+       WHERE a.attrelid = 'public.bird_passports'::regclass
+         AND a.attname = 'gender'
+         AND a.attnum > 0
+         AND NOT a.attisdropped`,
+    );
+    expect(genderColumn).toMatchObject({
+      type: 'bird_passports_gender_enum',
+      notNull: true,
+    });
+    expect(genderColumn.defaultExpression).toMatch(
+      /^'UNKNOWN'::(public\.)?bird_passports_gender_enum$/,
+    );
+
     const constraints = await dataSource.query<Array<{ conname: string }>>(
       `SELECT c.conname
        FROM pg_catalog.pg_constraint c
@@ -255,6 +324,37 @@ describeDatabase('Bird Passport PostgreSQL integration', () => {
        FROM public.bird_passport_code_seq`,
     );
     expect(position).toEqual({ last_value: '25543210', is_called: false });
+  });
+
+  it('backfills legacy rows with UNKNOWN and enforces enum/default/not-null behavior', async () => {
+    expect(migratedLegacyGender).toBe(BirdPassportGender.UNKNOWN);
+
+    const [defaulted] = await dataSource.query<Array<{ gender: string }>>(
+      `INSERT INTO public.bird_passports
+         (code, "ownerMobile", "birthDate", species, subspecies)
+       VALUES
+         ('B25543210', '09123456789', '2025-01-01', 'Default', 'Default')
+       RETURNING gender::text AS gender`,
+    );
+    expect(defaulted.gender).toBe(BirdPassportGender.UNKNOWN);
+
+    await expect(
+      dataSource.query(
+        `INSERT INTO public.bird_passports
+           (code, "ownerMobile", "birthDate", gender, species, subspecies)
+         VALUES
+           ('B25543211', '09123456789', '2025-01-01', $1, 'Invalid', 'Invalid')`,
+        ['OTHER'],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      dataSource.query(
+        `INSERT INTO public.bird_passports
+           (code, "ownerMobile", "birthDate", gender, species, subspecies)
+         VALUES
+           ('B25543212', '09123456789', '2025-01-01', NULL, 'Null', 'Null')`,
+      ),
+    ).rejects.toThrow();
   });
 
   it('allocates the first code and keeps concurrent codes unique', async () => {
@@ -546,6 +646,7 @@ describeDatabase('Bird Passport PostgreSQL integration', () => {
        DROP SEQUENCE IF EXISTS public.bird_passport_code_seq;
        DROP FUNCTION IF EXISTS public.reject_bird_passport_code_update();
        DROP FUNCTION IF EXISTS public.unexpected_bird_passport_trigger();
+       DROP TYPE IF EXISTS public.bird_passports_gender_enum;
        DROP TYPE IF EXISTS public.bird_passports_status_enum;`,
     );
   }
@@ -567,6 +668,7 @@ function passportDto(species: string) {
     ownerMobile: '09123456789',
     birdName: 'Integration Bird',
     birthDate: '2025-01-01',
+    gender: BirdPassportGender.UNKNOWN,
     species,
     subspecies: 'Integration',
   };
@@ -639,6 +741,7 @@ function expectedColumns() {
     column('bird_passports', 'status', 'USER-DEFINED', notNull),
     column('bird_passports', 'createdAt', 'timestamp with time zone', notNull),
     column('bird_passports', 'updatedAt', 'timestamp with time zone', notNull),
+    column('bird_passports', 'gender', 'USER-DEFINED', notNull),
     column('bird_vaccine_records', 'id', 'uuid', notNull),
     column('bird_vaccine_records', 'passportId', 'uuid', notNull),
     column('bird_vaccine_records', 'vaccineName', 'character varying', notNull),

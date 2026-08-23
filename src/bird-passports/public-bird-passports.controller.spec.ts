@@ -10,6 +10,7 @@ import { JwtModule, JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
 import request from 'supertest';
+import { BirdPassportGender } from './entities/bird-passport.entity';
 import {
   BIRD_PASSPORT_LOOKUP_GRANT_SECONDS,
   BirdPassportLookupGrantService,
@@ -49,6 +50,7 @@ const publicDetail = {
   ownerFullName: 'Owner Name',
   birdName: 'Rio',
   birthDate: '2025-05-10',
+  gender: BirdPassportGender.FEMALE,
   ageMonths: 15,
   species: 'Parrot',
   subspecies: 'Macaw',
