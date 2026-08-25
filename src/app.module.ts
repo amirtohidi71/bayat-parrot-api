@@ -10,6 +10,7 @@ import { OrdersModule } from './orders/orders.module';
 import { CategoriesModule } from './categories/categories.module';
 import { AdminModule } from './admin/admin.module';
 import { BirdPassportsModule } from './bird-passports/bird-passports.module';
+import { SalesChatModule } from './sales-chat/sales-chat.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { BirdPassportsModule } from './bird-passports/bird-passports.module';
     CategoriesModule,
     AdminModule,
     BirdPassportsModule,
+    SalesChatModule,
   ],
   controllers: [AppController],
   providers: [AppService],
