@@ -1,4 +1,4 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Header, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
@@ -6,6 +6,7 @@ import { CompleteRegistrationDto } from './dto/complete-registration.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { AuthenticatedUser } from './decorators/current-user.decorator';
+import { toOwnUserProfileResponse } from '../users/dto/user-response.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -23,10 +24,13 @@ export class AuthController {
 
   @Post('register')
   @UseGuards(JwtAuthGuard)
-  register(
+  @Header('Cache-Control', 'private, no-store')
+  async register(
     @CurrentUser() user: AuthenticatedUser,
     @Body() completeRegistrationDto: CompleteRegistrationDto,
   ) {
-    return this.authService.register(user.id, completeRegistrationDto);
+    return toOwnUserProfileResponse(
+      await this.authService.register(user.id, completeRegistrationDto),
+    );
   }
 }
