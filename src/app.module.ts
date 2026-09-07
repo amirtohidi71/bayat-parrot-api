@@ -11,6 +11,7 @@ import { CategoriesModule } from './categories/categories.module';
 import { AdminModule } from './admin/admin.module';
 import { BirdPassportsModule } from './bird-passports/bird-passports.module';
 import { SalesChatModule } from './sales-chat/sales-chat.module';
+import { VetAppointmentsModule } from './vet-appointments/vet-appointments.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { SalesChatModule } from './sales-chat/sales-chat.module';
     AdminModule,
     BirdPassportsModule,
     SalesChatModule,
+    VetAppointmentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
