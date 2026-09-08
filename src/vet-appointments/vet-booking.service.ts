@@ -36,6 +36,7 @@ import {
 } from './vet-appointment.enums';
 import { VetBookingPolicy } from './policies/vet-booking.policy';
 import { encryptVetField } from './security/vet-field-encryption';
+import { VET_ADMIN_MANUAL_RULE } from './vet-manual-assignment.constants';
 
 type BookingInput = BookVetAppointmentDto & { passportCode?: string };
 
@@ -340,6 +341,7 @@ export class VetBookingService {
     if (!appointment) return null;
     if (
       appointment.pricingKind !== VetPricingKind.FREE ||
+      appointment.pricingRuleVersion === VET_ADMIN_MANUAL_RULE ||
       appointment.slotId !== input.slotId ||
       appointment.passportCodeSnapshot !== (input.passportCode ?? null)
     )

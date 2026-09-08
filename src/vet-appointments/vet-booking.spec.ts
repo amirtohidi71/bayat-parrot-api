@@ -7,6 +7,7 @@ import { VetAppointment } from './entities/appointment.entity';
 import { VetAppointmentStatus, VetPricingKind } from './vet-appointment.enums';
 import { VetBookingPolicy } from './policies/vet-booking.policy';
 import { VetBookingService } from './vet-booking.service';
+import { VET_ADMIN_MANUAL_RULE } from './vet-manual-assignment.constants';
 
 describe('Vet booking service boundary', () => {
   it('allowlists customer output and preserves bigint money as a string', () => {
@@ -61,6 +62,39 @@ describe('Vet booking service boundary', () => {
         slotId: randomUUID(),
       }),
     ).rejects.toThrow(BadRequestException);
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an admin assignment as a customer booking retry', async () => {
+    const customerUserId = randomUUID();
+    const bookingRequestId = randomUUID();
+    const slotId = randomUUID();
+    const repository = {
+      findOneBy: jest.fn().mockResolvedValue({
+        customerUserId,
+        bookingRequestId,
+        slotId,
+        pricingKind: VetPricingKind.FREE,
+        pricingRuleVersion: VET_ADMIN_MANUAL_RULE,
+        passportCodeSnapshot: null,
+      }),
+    };
+    const transaction = jest.fn();
+    const source = {
+      manager: { getRepository: () => repository },
+      transaction,
+    } as unknown as DataSource;
+    const service = new VetBookingService(
+      source,
+      new ConfigService(),
+      new VetBookingPolicy(new ConfigService()),
+    );
+
+    await expect(
+      service.book(customerUserId, { bookingRequestId, slotId }),
+    ).rejects.toEqual(
+      new ConflictException('Booking request identifier was already used'),
+    );
     expect(transaction).not.toHaveBeenCalled();
   });
 
