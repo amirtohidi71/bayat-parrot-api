@@ -13,6 +13,8 @@ import { VetBookingPolicy } from './policies/vet-booking.policy';
 import { AdminModule } from '../admin/admin.module';
 import { AdminVetAvailabilityController } from './admin-availability.controller';
 import { VetAvailabilityService } from './availability.service';
+import { CustomerVetBookingController } from './customer-booking.controller';
+import { VetBookingService } from './vet-booking.service';
 
 export const VET_ENTITIES = [
   VetDoctor,
@@ -26,11 +28,15 @@ export const VET_ENTITIES = [
   VetNotificationOutbox,
 ];
 
-// Day 2C adds admin availability only; no booking or provider execution.
 @Module({
   imports: [TypeOrmModule.forFeature(VET_ENTITIES), AdminModule],
-  controllers: [AdminVetAvailabilityController],
-  providers: [VetBookingPolicy, VetAvailabilityService],
-  exports: [TypeOrmModule, VetBookingPolicy, VetAvailabilityService],
+  controllers: [AdminVetAvailabilityController, CustomerVetBookingController],
+  providers: [VetBookingPolicy, VetAvailabilityService, VetBookingService],
+  exports: [
+    TypeOrmModule,
+    VetBookingPolicy,
+    VetAvailabilityService,
+    VetBookingService,
+  ],
 })
 export class VetAppointmentsModule {}
