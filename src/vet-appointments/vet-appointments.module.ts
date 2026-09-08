@@ -10,6 +10,9 @@ import { VetVideoRoom } from './entities/video-room.entity';
 import { VetAppointmentEvent } from './entities/appointment-event.entity';
 import { VetNotificationOutbox } from './entities/notification-outbox.entity';
 import { VetBookingPolicy } from './policies/vet-booking.policy';
+import { AdminModule } from '../admin/admin.module';
+import { AdminVetAvailabilityController } from './admin-availability.controller';
+import { VetAvailabilityService } from './availability.service';
 
 export const VET_ENTITIES = [
   VetDoctor,
@@ -23,10 +26,11 @@ export const VET_ENTITIES = [
   VetNotificationOutbox,
 ];
 
-// Day 1: persistence and policy only. No booking, payment, video or SMS execution.
+// Day 2C adds admin availability only; no booking or provider execution.
 @Module({
-  imports: [TypeOrmModule.forFeature(VET_ENTITIES)],
-  providers: [VetBookingPolicy],
-  exports: [TypeOrmModule, VetBookingPolicy],
+  imports: [TypeOrmModule.forFeature(VET_ENTITIES), AdminModule],
+  controllers: [AdminVetAvailabilityController],
+  providers: [VetBookingPolicy, VetAvailabilityService],
+  exports: [TypeOrmModule, VetBookingPolicy, VetAvailabilityService],
 })
 export class VetAppointmentsModule {}
