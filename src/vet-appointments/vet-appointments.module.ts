@@ -18,6 +18,13 @@ import { VetBookingService } from './vet-booking.service';
 import { VetPaidHoldService } from './vet-paid-hold.service';
 import { AdminVetManualAssignmentController } from './admin-manual-assignment.controller';
 import { VetManualAssignmentService } from './vet-manual-assignment.service';
+import {
+  CustomerVetVideoController,
+  DoctorVetVideoController,
+} from './vet-video.controller';
+import { VetDoctorAuthGuard } from './guards/vet-doctor-auth.guard';
+import { InternalVetVideoProvider } from './vet-video-provider';
+import { VetVideoService } from './vet-video.service';
 
 export const VET_ENTITIES = [
   VetDoctor,
@@ -37,6 +44,8 @@ export const VET_ENTITIES = [
     AdminVetAvailabilityController,
     AdminVetManualAssignmentController,
     CustomerVetBookingController,
+    CustomerVetVideoController,
+    DoctorVetVideoController,
   ],
   providers: [
     VetBookingPolicy,
@@ -44,6 +53,9 @@ export const VET_ENTITIES = [
     VetBookingService,
     VetPaidHoldService,
     VetManualAssignmentService,
+    VetDoctorAuthGuard,
+    InternalVetVideoProvider,
+    VetVideoService,
   ],
   exports: [
     TypeOrmModule,
@@ -52,6 +64,7 @@ export const VET_ENTITIES = [
     VetBookingService,
     VetPaidHoldService,
     VetManualAssignmentService,
+    VetVideoService,
   ],
 })
 export class VetAppointmentsModule {}
