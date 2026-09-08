@@ -15,6 +15,7 @@ import { AdminVetAvailabilityController } from './admin-availability.controller'
 import { VetAvailabilityService } from './availability.service';
 import { CustomerVetBookingController } from './customer-booking.controller';
 import { VetBookingService } from './vet-booking.service';
+import { VetPaidHoldService } from './vet-paid-hold.service';
 
 export const VET_ENTITIES = [
   VetDoctor,
@@ -31,12 +32,18 @@ export const VET_ENTITIES = [
 @Module({
   imports: [TypeOrmModule.forFeature(VET_ENTITIES), AdminModule],
   controllers: [AdminVetAvailabilityController, CustomerVetBookingController],
-  providers: [VetBookingPolicy, VetAvailabilityService, VetBookingService],
+  providers: [
+    VetBookingPolicy,
+    VetAvailabilityService,
+    VetBookingService,
+    VetPaidHoldService,
+  ],
   exports: [
     TypeOrmModule,
     VetBookingPolicy,
     VetAvailabilityService,
     VetBookingService,
+    VetPaidHoldService,
   ],
 })
 export class VetAppointmentsModule {}

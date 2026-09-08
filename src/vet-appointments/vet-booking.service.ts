@@ -339,6 +339,7 @@ export class VetBookingService {
     });
     if (!appointment) return null;
     if (
+      appointment.pricingKind !== VetPricingKind.FREE ||
       appointment.slotId !== input.slotId ||
       appointment.passportCodeSnapshot !== (input.passportCode ?? null)
     )

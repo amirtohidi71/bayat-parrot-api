@@ -53,8 +53,8 @@ import {
   '("pricingKind" = \'FREE\' AND "feeAmountMinor" = 0) OR ("pricingKind" = \'PAID\' AND "feeAmountMinor" > 0)',
 )
 @Check(
-  'CHK_vet_appointments_v1_no_gateway',
-  '("pricingKind" = \'FREE\' AND "slotId" IS NOT NULL AND "status" IN (\'CONFIRMED\', \'COMPLETED\', \'CANCELLED\', \'NO_SHOW\') AND "confirmedAt" IS NOT NULL AND "holdExpiresAt" IS NULL) OR ("pricingKind" = \'PAID\' AND "status" = \'PAYMENT_UNAVAILABLE\' AND "slotId" IS NULL AND "holdExpiresAt" IS NULL AND "confirmedAt" IS NULL)',
+  'CHK_vet_appointments_hold_lifecycle',
+  '("pricingKind" = \'FREE\' AND "slotId" IS NOT NULL AND "status" IN (\'CONFIRMED\', \'COMPLETED\', \'CANCELLED\', \'NO_SHOW\') AND "confirmedAt" IS NOT NULL AND "holdExpiresAt" IS NULL) OR ("pricingKind" = \'PAID\' AND (("status" = \'PAYMENT_UNAVAILABLE\' AND "slotId" IS NULL AND "holdExpiresAt" IS NULL AND "confirmedAt" IS NULL) OR ("status" IN (\'PAYMENT_PENDING\', \'EXPIRED\') AND "slotId" IS NOT NULL AND "holdExpiresAt" IS NOT NULL AND isfinite("holdExpiresAt") AND "holdExpiresAt" > "createdAt" AND "confirmedAt" IS NULL)))',
 )
 @Check(
   'CHK_vet_appointments_completion',
