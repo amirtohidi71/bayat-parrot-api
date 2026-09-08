@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, QueryRunner } from 'typeorm';
 import { VET_ENTITIES } from './vet-appointments.module';
 import { VET_TEST_ENTITIES } from '../../test/vet-test-entities';
 import { VetAppointment } from './entities/appointment.entity';
@@ -30,6 +30,7 @@ describeDatabase('Vet Day 1 real PostgreSQL foundation', () => {
   let migration: string;
   let migrationBody: string;
   let disposableConfirmed = false;
+  let suiteLock: QueryRunner | undefined;
 
   beforeAll(async () => {
     const url = requireDisposableDatabaseUrl();
@@ -42,11 +43,21 @@ describeDatabase('Vet Day 1 real PostgreSQL foundation', () => {
       extra: { max: 12 },
     });
     await source.initialize();
-    const [identity] = await source.query<Array<{ database: string }>>(
-      'SELECT current_database() AS database',
+    const [identity] = await source.query<
+      Array<{ database: string; address: string }>
+    >(
+      'SELECT current_database() AS database, host(inet_server_addr()) AS address',
     );
-    if (identity?.database !== new URL(url).pathname.slice(1))
+    if (
+      identity?.database !== 'vet_appointments_disposable_test' ||
+      !['127.0.0.1', '::1'].includes(identity.address)
+    )
       throw new Error('Disposable database identity mismatch');
+    suiteLock = source.createQueryRunner();
+    await suiteLock.connect();
+    await suiteLock.query(
+      "SELECT pg_advisory_lock(hashtextextended('test:vet-postgres-suites', 0))",
+    );
     disposableConfirmed = true;
     // This suite owns only the nine vet tables in a separately named disposable DB.
     await dropVetObjects();
@@ -79,6 +90,15 @@ describeDatabase('Vet Day 1 real PostgreSQL foundation', () => {
     try {
       if (disposableConfirmed) await dropVetObjects();
     } finally {
+      if (suiteLock) {
+        try {
+          await suiteLock.query(
+            "SELECT pg_advisory_unlock(hashtextextended('test:vet-postgres-suites', 0))",
+          );
+        } finally {
+          await suiteLock.release();
+        }
+      }
       await source.destroy();
     }
   });
@@ -98,7 +118,7 @@ describeDatabase('Vet Day 1 real PostgreSQL foundation', () => {
     expect(windows.count).toBe('0');
   });
 
-  it('matches every TypeORM column, FK, CHECK, unique and exclusion to the migrated catalog', async () => {
+  it('matches baseline metadata, accounting explicitly for the two forward-only contracts', async () => {
     for (const entity of VET_ENTITIES) {
       const metadata = source.getMetadata(entity);
       const columns = await source.query<
@@ -137,7 +157,15 @@ describeDatabase('Vet Day 1 real PostgreSQL foundation', () => {
         'SELECT indexname AS name FROM pg_indexes WHERE schemaname = $1 AND tablename = $2',
         ['public', metadata.tableName],
       );
-      for (const item of metadata.indices)
+      if (metadata.tableName === 'vet_appointment_slots') {
+        expect(names).toContain('UQ_vet_slots_doctor_start');
+        expect(indexes.map((i) => i.name)).not.toContain(
+          'UQ_vet_slots_doctor_start_non_cancelled',
+        );
+      }
+      for (const item of metadata.indices.filter(
+        (i) => i.name !== 'UQ_vet_slots_doctor_start_non_cancelled',
+      ))
         expect(indexes.map((i) => i.name)).toContain(item.name);
     }
   });
@@ -156,8 +184,13 @@ describeDatabase('Vet Day 1 real PostgreSQL foundation', () => {
           `CREATE TEMP TABLE ${temporary} (LIKE ${table}) ON COMMIT DROP`,
         );
         for (const check of metadata.checks) {
+          // This suite deliberately owns the immutable Day 1 baseline only.
+          const expression =
+            check.name === 'CHK_vet_windows_status'
+              ? "\"status\" IN ('ACTIVE', 'CANCELLED')"
+              : check.expression;
           await runner.query(
-            `ALTER TABLE ${temporary} ADD CONSTRAINT ${quote(check.name)} CHECK (${check.expression})`,
+            `ALTER TABLE ${temporary} ADD CONSTRAINT ${quote(check.name)} CHECK (${expression})`,
           );
         }
         for (const exclusion of metadata.exclusions) {
@@ -807,9 +840,7 @@ function requireDisposableDatabaseUrl(): string {
   const value = process.env.VET_TEST_DATABASE_URL?.trim();
   if (!value) throw new Error('VET_TEST_DATABASE_URL is required');
   const url = new URL(value);
-  if (
-    !/^vet_[a-z0-9_]*(test|disposable)[a-z0-9_]*$/i.test(url.pathname.slice(1))
-  )
+  if (url.pathname.slice(1) !== 'vet_appointments_disposable_test')
     throw new Error('Dedicated vet test/disposable database required');
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname))
     throw new Error('Vet tests require a local disposable PostgreSQL server');

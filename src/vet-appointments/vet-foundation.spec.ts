@@ -2,7 +2,11 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { VetBookingPolicy } from './policies/vet-booking.policy';
-import { VetFreeScope } from './vet-appointment.enums';
+import {
+  VetAvailabilityStatus,
+  VetFreeScope,
+  VetSlotStatus,
+} from './vet-appointment.enums';
 import { VET_ENTITIES } from './vet-appointments.module';
 import { VET_TEST_ENTITIES } from '../../test/vet-test-entities';
 import {
@@ -24,6 +28,43 @@ describe('Vet foundation metadata and policy', () => {
       synchronize: false,
     });
     await source.buildForTest();
+    expect(Object.values(VetAvailabilityStatus)).toEqual([
+      'ACTIVE',
+      'CANCELLED',
+      'RETIRED',
+    ]);
+    expect(Object.values(VetSlotStatus)).toEqual([
+      'AVAILABLE',
+      'BLOCKED',
+      'CANCELLED',
+    ]);
+    const windows = source.getMetadata('vet_availability_windows');
+    expect(
+      windows.checks.find((c) => c.name === 'CHK_vet_windows_status')
+        ?.expression,
+    ).toBe("\"status\" IN ('ACTIVE', 'CANCELLED', 'RETIRED')");
+    const slots = source.getMetadata('vet_appointment_slots');
+    expect(slots.uniques.map((u) => u.name)).not.toContain(
+      'UQ_vet_slots_doctor_start',
+    );
+    const usableStart = slots.indices.find(
+      (i) => i.name === 'UQ_vet_slots_doctor_start_non_cancelled',
+    );
+    expect(usableStart?.isUnique).toBe(true);
+    expect(usableStart?.columns.map((c) => c.databaseName)).toEqual([
+      'doctorId',
+      'startsAt',
+    ]);
+    expect(usableStart?.where).toBe('"status" <> \'CANCELLED\'');
+    expect(slots.uniques.map((u) => u.name)).toContain(
+      'UQ_vet_slots_id_doctor',
+    );
+    expect(slots.exclusions[0].expression).toContain(
+      'WHERE ("status" <> \'CANCELLED\')',
+    );
+    expect(windows.exclusions[0].expression).toContain(
+      'WHERE ("status" = \'ACTIVE\')',
+    );
     expect(VET_ENTITIES).toHaveLength(9);
     for (const entity of VET_ENTITIES) {
       const metadata = source.getMetadata(entity);

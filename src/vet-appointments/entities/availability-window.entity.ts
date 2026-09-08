@@ -14,7 +14,10 @@ import { VetAvailabilityStatus } from '../vet-appointment.enums';
 
 // SQL migrations own these tables, including triggers and deferred constraints.
 @Entity({ name: 'vet_availability_windows', synchronize: false })
-@Check('CHK_vet_windows_status', "\"status\" IN ('ACTIVE', 'CANCELLED')")
+@Check(
+  'CHK_vet_windows_status',
+  "\"status\" IN ('ACTIVE', 'CANCELLED', 'RETIRED')",
+)
 @Check(
   'CHK_vet_windows_time',
   'isfinite("startsAt") AND isfinite("endsAt") AND "startsAt" < "endsAt" AND "endsAt" - "startsAt" <= interval \'1 day\'',

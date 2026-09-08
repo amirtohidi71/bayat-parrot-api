@@ -22,7 +22,10 @@ import { VetSlotStatus } from '../vet-appointment.enums';
   'CHK_vet_slots_time',
   'isfinite("startsAt") AND isfinite("endsAt") AND "startsAt" < "endsAt"',
 )
-@Unique('UQ_vet_slots_doctor_start', ['doctorId', 'startsAt'])
+@Index('UQ_vet_slots_doctor_start_non_cancelled', ['doctorId', 'startsAt'], {
+  unique: true,
+  where: '"status" <> \'CANCELLED\'',
+})
 @Unique('UQ_vet_slots_id_doctor', ['id', 'doctorId'])
 @ForeignKey(
   'vet_availability_windows',

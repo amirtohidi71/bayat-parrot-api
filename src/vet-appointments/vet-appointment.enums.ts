@@ -1,6 +1,7 @@
 export enum VetAvailabilityStatus {
   ACTIVE = 'ACTIVE',
   CANCELLED = 'CANCELLED',
+  RETIRED = 'RETIRED',
 }
 
 export enum VetSlotStatus {
