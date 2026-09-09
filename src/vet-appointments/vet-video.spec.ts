@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   InternalServerErrorException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -12,6 +13,8 @@ import { VetVideoStatus } from './vet-appointment.enums';
 import {
   InternalVetVideoProvider,
   VET_INTERNAL_VIDEO_PROVIDER,
+  VetVideoProviderConfigurationError,
+  VetVideoProviderUnavailableError,
 } from './vet-video-provider';
 import { VetVideoService } from './vet-video.service';
 
@@ -19,15 +22,19 @@ describe('Vet video consultation boundary', () => {
   const provider = () =>
     new InternalVetVideoProvider(new JwtService({ secret: 'test-secret' }));
 
-  it('allowlists room access and keeps internal meeting identity private', () => {
+  it('allowlists room access and keeps internal meeting identity private', async () => {
     const jwt = provider();
     const now = new Date('2030-01-02T10:00:00Z');
     const expiresAt = new Date('2030-01-02T10:01:00Z');
     const participant = { type: 'CUSTOMER' as const, id: randomUUID() };
-    const meetingId = jwt.createMeeting();
-    const credential = jwt.issueAccess(
-      randomUUID(),
-      randomUUID(),
+    const roomId = randomUUID();
+    const appointmentId = randomUUID();
+    const meetingId = jwt.meetingId(appointmentId);
+    await jwt.ensureMeeting(meetingId, expiresAt);
+    const credential = await jwt.issueAccess(
+      roomId,
+      appointmentId,
+      meetingId,
       participant,
       now,
       expiresAt,
@@ -124,5 +131,27 @@ describe('Vet video consultation boundary', () => {
     await expect(
       service.joinCustomer(randomUUID(), randomUUID()),
     ).rejects.toThrow(InternalServerErrorException);
+  });
+
+  it.each([
+    [
+      new VetVideoProviderConfigurationError('PRIVATE'),
+      InternalServerErrorException,
+    ],
+    [
+      new VetVideoProviderUnavailableError('PRIVATE'),
+      ServiceUnavailableException,
+    ],
+  ])('maps provider failures without leaking details', async (error, kind) => {
+    const service = new VetVideoService(
+      {
+        transaction: jest.fn().mockRejectedValue(error),
+      } as unknown as DataSource,
+      new ConfigService(),
+      provider(),
+    );
+    await expect(
+      service.joinCustomer(randomUUID(), randomUUID()),
+    ).rejects.toThrow(kind);
   });
 });

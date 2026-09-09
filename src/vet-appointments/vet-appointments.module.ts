@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { VetDoctor } from './entities/doctor.entity';
 import { VetAvailabilityWindow } from './entities/availability-window.entity';
@@ -23,8 +24,34 @@ import {
   DoctorVetVideoController,
 } from './vet-video.controller';
 import { VetDoctorAuthGuard } from './guards/vet-doctor-auth.guard';
-import { InternalVetVideoProvider } from './vet-video-provider';
+import {
+  InternalVetVideoProvider,
+  VET_VIDEO_PROVIDER,
+  VetVideoProvider,
+} from './vet-video-provider';
 import { VetVideoService } from './vet-video.service';
+import {
+  LIVEKIT_ROOM_TRANSPORT,
+  LiveKitSdkRoomTransport,
+  LiveKitVetVideoProvider,
+} from './vet-livekit-provider';
+
+export function selectVetVideoProvider(
+  config: ConfigService,
+  livekit: LiveKitVetVideoProvider,
+  internal: InternalVetVideoProvider,
+): VetVideoProvider {
+  const livekitValues = [
+    config.get<string>('LIVEKIT_URL')?.trim(),
+    config.get<string>('LIVEKIT_API_KEY')?.trim(),
+    config.get<string>('LIVEKIT_API_SECRET')?.trim(),
+  ];
+  const complete = livekitValues.every(Boolean);
+  const absent = livekitValues.every((value) => !value);
+  const production =
+    config.get<string>('NODE_ENV')?.trim().toLowerCase() === 'production';
+  return complete || !absent || production ? livekit : internal;
+}
 
 export const VET_ENTITIES = [
   VetDoctor,
@@ -55,6 +82,17 @@ export const VET_ENTITIES = [
     VetManualAssignmentService,
     VetDoctorAuthGuard,
     InternalVetVideoProvider,
+    LiveKitVetVideoProvider,
+    { provide: LIVEKIT_ROOM_TRANSPORT, useClass: LiveKitSdkRoomTransport },
+    {
+      provide: VET_VIDEO_PROVIDER,
+      inject: [
+        ConfigService,
+        LiveKitVetVideoProvider,
+        InternalVetVideoProvider,
+      ],
+      useFactory: selectVetVideoProvider,
+    },
     VetVideoService,
   ],
   exports: [

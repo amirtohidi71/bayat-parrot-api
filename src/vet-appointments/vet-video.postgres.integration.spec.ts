@@ -23,6 +23,10 @@ import { VET_ENTITIES } from './vet-appointments.module';
 import { VetBookingService } from './vet-booking.service';
 import { VetManualAssignmentService } from './vet-manual-assignment.service';
 import {
+  LiveKitRoomTransport,
+  LiveKitVetVideoProvider,
+} from './vet-livekit-provider';
+import {
   InternalVetVideoProvider,
   VET_INTERNAL_VIDEO_PROVIDER,
 } from './vet-video-provider';
@@ -41,6 +45,10 @@ describeDatabase('Day 3A video consultation real PostgreSQL', () => {
   let booking: VetBookingService;
   let assignment: VetManualAssignmentService;
   let video: VetVideoService;
+  let livekitVideo: VetVideoService;
+  let ensureLiveKitRoom: jest.MockedFunction<
+    LiveKitRoomTransport['ensureRoom']
+  >;
   let suiteLock: QueryRunner | undefined;
   let disposableConfirmed = false;
   const createdUsers: string[] = [];
@@ -93,6 +101,7 @@ describeDatabase('Day 3A video consultation real PostgreSQL', () => {
       '20260908-enable-vet-paid-holds.sql',
       '20260909-enable-vet-admin-manual-assignment.sql',
       '20260909-enable-vet-video-consultation.sql',
+      '20260910-enable-vet-livekit-provider.sql',
     ])
       await applyMigration(name);
     availability = new VetAvailabilityService(source);
@@ -117,6 +126,23 @@ describeDatabase('Day 3A video consultation real PostgreSQL', () => {
       new InternalVetVideoProvider(
         new JwtService({ secret: 'video-test-secret' }),
       ),
+    );
+    ensureLiveKitRoom = jest.fn().mockResolvedValue(undefined);
+    const livekitConfig = new ConfigService({
+      LIVEKIT_URL: 'wss://video.example.test',
+      LIVEKIT_API_KEY: 'test-api-key',
+      LIVEKIT_API_SECRET: 'test-api-secret-with-at-least-32-characters',
+    });
+    livekitVideo = new VetVideoService(
+      source,
+      new ConfigService({
+        VET_VIDEO_JOIN_BEFORE_MINUTES: '15',
+        VET_VIDEO_GRACE_AFTER_MINUTES: '15',
+        VET_VIDEO_ACCESS_TOKEN_SECONDS: '60',
+      }),
+      new LiveKitVetVideoProvider(livekitConfig, {
+        ensureRoom: ensureLiveKitRoom,
+      }),
     );
   }, 60_000);
 
@@ -144,14 +170,52 @@ describeDatabase('Day 3A video consultation real PostgreSQL', () => {
     }
   });
 
-  it('applies the video migration idempotently', async () => {
-    await applyMigration('20260909-enable-vet-video-consultation.sql');
+  it('applies the LiveKit migration idempotently', async () => {
+    await applyMigration('20260910-enable-vet-livekit-provider.sql');
     const [constraint] = await source.query<Array<{ definition: string }>>(
       `SELECT pg_get_constraintdef(oid) definition FROM pg_constraint
        WHERE conrelid='public.vet_video_rooms'::regclass
          AND conname='CHK_vet_video_provider'`,
     );
     expect(constraint.definition).toContain('INTERNAL');
+    expect(constraint.definition).toContain('LIVEKIT');
+  });
+
+  it('persists one LiveKit room for concurrent authorized joins without network', async () => {
+    ensureLiveKitRoom.mockClear();
+    const customer = await user();
+    const f = await fixture(5);
+    const appointment = await assignment.create(
+      { customerUserId: customer.id, slotId: f.slot.id },
+      'livekit-admin',
+    );
+    const [customerJoin, doctorJoin] = await Promise.all([
+      livekitVideo.joinCustomer(appointment.appointmentId, customer.id),
+      livekitVideo.joinDoctor(appointment.appointmentId, f.doctor.id),
+    ]);
+    expect(customerJoin.roomId).toBe(doctorJoin.roomId);
+    expect(customerJoin.provider).toBe('LIVEKIT');
+    expect(customerJoin.serverUrl).toBe('wss://video.example.test');
+    expect(await roomCount(appointment.appointmentId)).toBe(1);
+    const room = await source.getRepository(VetVideoRoom).findOne({
+      select: {
+        id: true,
+        provider: true,
+        providerMeetingId: true,
+        guestUrlCiphertext: true,
+        hostUrlCiphertext: true,
+      },
+      where: { appointmentId: appointment.appointmentId },
+    });
+    expect(room).toMatchObject({
+      provider: 'LIVEKIT',
+      providerMeetingId: `vet-${appointment.appointmentId}`,
+      guestUrlCiphertext: null,
+      hostUrlCiphertext: null,
+    });
+    expect(
+      new Set(ensureLiveKitRoom.mock.calls.map((call) => call[1])),
+    ).toEqual(new Set([`vet-${appointment.appointmentId}`]));
   });
 
   it('creates and retries one room for a Day 2D first-free appointment', async () => {

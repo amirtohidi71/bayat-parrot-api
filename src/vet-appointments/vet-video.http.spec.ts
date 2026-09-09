@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   INestApplication,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtService } from '@nestjs/jwt';
@@ -114,6 +115,7 @@ describe('Vet video consultation HTTP', () => {
     [new ForbiddenException('Wrong participant'), 403],
     [new NotFoundException('Appointment missing'), 404],
     [new ConflictException('Room unavailable'), 409],
+    [new ServiceUnavailableException('Provider unavailable'), 503],
   ])('preserves stable customer error mapping %#', async (error, status) => {
     video.joinCustomer.mockRejectedValueOnce(error);
     await request(server)

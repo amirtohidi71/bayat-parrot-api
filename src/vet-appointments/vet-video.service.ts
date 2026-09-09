@@ -3,9 +3,11 @@ import {
   ConflictException,
   ForbiddenException,
   HttpException,
+  Inject,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
@@ -24,10 +26,12 @@ import { VetDoctor } from './entities/doctor.entity';
 import { VetVideoRoom } from './entities/video-room.entity';
 import { VetAppointmentStatus, VetVideoStatus } from './vet-appointment.enums';
 import {
-  InternalVetVideoProvider,
-  VET_INTERNAL_VIDEO_PROVIDER,
+  VET_VIDEO_PROVIDER,
   VetVideoParticipant,
+  VetVideoProviderConfigurationError,
+  VetVideoProviderUnavailableError,
 } from './vet-video-provider';
+import type { VetVideoProvider } from './vet-video-provider';
 
 type JoinResult =
   | { denied: false; response: ReturnType<typeof VetVideoRoomResponseDto.from> }
@@ -38,7 +42,7 @@ export class VetVideoService {
   constructor(
     private readonly source: DataSource,
     private readonly config: ConfigService,
-    private readonly provider: InternalVetVideoProvider,
+    @Inject(VET_VIDEO_PROVIDER) private readonly provider: VetVideoProvider,
   ) {}
 
   joinCustomer(appointmentId: string, customerUserId: string) {
@@ -72,6 +76,14 @@ export class VetVideoService {
         return expired;
       } catch (error) {
         if (error instanceof HttpException) throw error;
+        if (error instanceof VetVideoProviderConfigurationError)
+          throw new InternalServerErrorException(
+            'Video provider is not configured',
+          );
+        if (error instanceof VetVideoProviderUnavailableError)
+          throw new ServiceUnavailableException(
+            'Video provider is temporarily unavailable',
+          );
         const code = this.postgresCode(error);
         if (['40P01', '40001', '55P03'].includes(code ?? '') && attempt < 2)
           continue;
@@ -95,6 +107,14 @@ export class VetVideoService {
         return result.response;
       } catch (error) {
         if (error instanceof HttpException) throw error;
+        if (error instanceof VetVideoProviderConfigurationError)
+          throw new InternalServerErrorException(
+            'Video provider is not configured',
+          );
+        if (error instanceof VetVideoProviderUnavailableError)
+          throw new ServiceUnavailableException(
+            'Video provider is temporarily unavailable',
+          );
         const code = this.postgresCode(error);
         if (['40P01', '40001', '55P03'].includes(code ?? '') && attempt < 2)
           continue;
@@ -193,7 +213,7 @@ export class VetVideoService {
       appointment.id,
       closesAt,
     );
-    if (readyRoom.provider !== VET_INTERNAL_VIDEO_PROVIDER) {
+    if (readyRoom.provider !== this.provider.name) {
       await this.expireRoom(roomRepository, readyRoom);
       return { denied: true, message: 'Video provider is unavailable' };
     }
@@ -219,9 +239,10 @@ export class VetVideoService {
     );
     if (tokenExpiresAt <= now)
       return { denied: true, message: 'Video room access window has closed' };
-    const credential = this.provider.issueAccess(
+    const credential = await this.provider.issueAccess(
       readyRoom.id,
       appointment.id,
+      readyRoom.providerMeetingId,
       participant,
       now,
       tokenExpiresAt,
@@ -245,16 +266,32 @@ export class VetVideoService {
     appointmentId: string,
     providerEndDate: Date,
   ): Promise<VetVideoRoom> {
-    if (room?.status === VetVideoStatus.READY) return room;
+    if (
+      room?.status === VetVideoStatus.READY &&
+      room.provider === this.provider.name
+    ) {
+      if (!room.providerMeetingId || !room.providerEndDate)
+        throw new ConflictException('Video room is unavailable');
+      await this.provider.ensureMeeting(
+        room.providerMeetingId,
+        room.providerEndDate,
+      );
+      return room;
+    }
     if (
       room &&
-      ![VetVideoStatus.NOT_CREATED, VetVideoStatus.FAILED].includes(room.status)
+      ![
+        VetVideoStatus.NOT_CREATED,
+        VetVideoStatus.FAILED,
+        VetVideoStatus.READY,
+      ].includes(room.status)
     )
       throw new ConflictException('Video room is unavailable');
-    const meetingId = this.provider.createMeeting();
+    const meetingId = this.provider.meetingId(appointmentId);
+    await this.provider.ensureMeeting(meetingId, providerEndDate);
     const ready = repository.create({
       ...(room ?? { id: randomUUID(), appointmentId }),
-      provider: VET_INTERNAL_VIDEO_PROVIDER,
+      provider: this.provider.name,
       providerMeetingId: meetingId,
       status: VetVideoStatus.READY,
       guestUrlCiphertext: null,

@@ -21,6 +21,7 @@ export class VetVideoRoomResponseDto {
       accessRole: participant.type,
       accessToken: credential.token,
       accessTokenExpiresAt: credential.expiresAt.toISOString(),
+      serverUrl: credential.serverUrl,
       appointmentWindow: {
         startsAt: slot.startsAt.toISOString(),
         endsAt: slot.endsAt.toISOString(),

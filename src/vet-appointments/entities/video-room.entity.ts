@@ -18,10 +18,13 @@ import { VetVideoStatus } from '../vet-appointment.enums';
   "\"status\" IN ('NOT_CREATED', 'CREATING', 'READY', 'FAILED', 'EXPIRED', 'DELETED')",
 )
 @Check('CHK_vet_video_attempts', '"attemptCount" >= 0')
-@Check('CHK_vet_video_provider', "\"provider\" IN ('WHEREBY', 'INTERNAL')")
+@Check(
+  'CHK_vet_video_provider',
+  "\"provider\" IN ('WHEREBY', 'INTERNAL', 'LIVEKIT')",
+)
 @Check(
   'CHK_vet_video_ready',
-  '"status" <> \'READY\' OR ("providerMeetingId" IS NOT NULL AND "providerEndDate" IS NOT NULL AND (("provider" = \'WHEREBY\' AND "guestUrlCiphertext" IS NOT NULL AND "hostUrlCiphertext" IS NOT NULL) OR ("provider" = \'INTERNAL\' AND "guestUrlCiphertext" IS NULL AND "hostUrlCiphertext" IS NULL)))',
+  '"status" <> \'READY\' OR ("providerMeetingId" IS NOT NULL AND "providerEndDate" IS NOT NULL AND (("provider" = \'WHEREBY\' AND "guestUrlCiphertext" IS NOT NULL AND "hostUrlCiphertext" IS NOT NULL) OR ("provider" IN (\'INTERNAL\', \'LIVEKIT\') AND "guestUrlCiphertext" IS NULL AND "hostUrlCiphertext" IS NULL)))',
 )
 @Check(
   'CHK_vet_video_ciphertexts',
