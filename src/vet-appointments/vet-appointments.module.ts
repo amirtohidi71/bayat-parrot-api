@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { JwtModule } from '@nestjs/jwt';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { VetDoctor } from './entities/doctor.entity';
 import { VetAvailabilityWindow } from './entities/availability-window.entity';
 import { VetAppointmentSlot } from './entities/appointment-slot.entity';
@@ -24,6 +26,10 @@ import {
   DoctorVetVideoController,
 } from './vet-video.controller';
 import { VetDoctorAuthGuard } from './guards/vet-doctor-auth.guard';
+import { VetDoctorLoginThrottlerGuard } from './guards/vet-doctor-login-throttler.guard';
+import { VetDoctorAuthController } from './vet-doctor-auth.controller';
+import { VetDoctorAuthService } from './vet-doctor-auth.service';
+import { VetDoctorTokenService } from './vet-doctor-token.service';
 import {
   InternalVetVideoProvider,
   VET_VIDEO_PROVIDER,
@@ -66,13 +72,21 @@ export const VET_ENTITIES = [
 ];
 
 @Module({
-  imports: [TypeOrmModule.forFeature(VET_ENTITIES), AdminModule],
+  imports: [
+    TypeOrmModule.forFeature(VET_ENTITIES),
+    AdminModule,
+    JwtModule.register({}),
+    ThrottlerModule.forRoot([
+      { name: 'default', ttl: 15 * 60 * 1000, limit: 10 },
+    ]),
+  ],
   controllers: [
     AdminVetAvailabilityController,
     AdminVetManualAssignmentController,
     CustomerVetBookingController,
     CustomerVetVideoController,
     DoctorVetVideoController,
+    VetDoctorAuthController,
   ],
   providers: [
     VetBookingPolicy,
@@ -81,6 +95,9 @@ export const VET_ENTITIES = [
     VetPaidHoldService,
     VetManualAssignmentService,
     VetDoctorAuthGuard,
+    VetDoctorLoginThrottlerGuard,
+    VetDoctorAuthService,
+    VetDoctorTokenService,
     InternalVetVideoProvider,
     LiveKitVetVideoProvider,
     { provide: LIVEKIT_ROOM_TRANSPORT, useClass: LiveKitSdkRoomTransport },

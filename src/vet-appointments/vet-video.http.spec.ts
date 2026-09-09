@@ -19,6 +19,11 @@ import {
   DoctorVetVideoController,
 } from './vet-video.controller';
 import { VetDoctorAuthGuard } from './guards/vet-doctor-auth.guard';
+import {
+  VET_DOCTOR_JWT_AUDIENCE,
+  VET_DOCTOR_JWT_ISSUER,
+} from './vet-doctor-auth.constants';
+import { VetDoctorTokenService } from './vet-doctor-token.service';
 import { VetVideoService } from './vet-video.service';
 
 describe('Vet video consultation HTTP', () => {
@@ -26,6 +31,7 @@ describe('Vet video consultation HTTP', () => {
   let server: Server;
   let jwt: JwtService;
   const secret = 'vet-video-http-test-secret';
+  const doctorSecret = 'vet-video-doctor-http-test-secret-123456789';
   const video = { joinCustomer: jest.fn(), joinDoctor: jest.fn() };
 
   beforeAll(async () => {
@@ -39,10 +45,14 @@ describe('Vet video consultation HTTP', () => {
         JwtAuthGuard,
         JwtStrategy,
         VetDoctorAuthGuard,
+        VetDoctorTokenService,
         { provide: VetVideoService, useValue: video },
         {
           provide: ConfigService,
-          useValue: new ConfigService({ JWT_SECRET: secret }),
+          useValue: new ConfigService({
+            JWT_SECRET: secret,
+            VET_DOCTOR_JWT_SECRET: doctorSecret,
+          }),
         },
       ],
     }).compile();
@@ -58,7 +68,15 @@ describe('Vet video consultation HTTP', () => {
   const customerToken = (id: string, role = 'customer') =>
     'Bearer ' + jwt.sign({ sub: id, phone: '09111111111', role });
   const doctorToken = (id: string, scope = 'vet-doctor') =>
-    'Bearer ' + jwt.sign({ sub: id, scope });
+    'Bearer ' +
+    jwt.sign(
+      { sub: id, scope },
+      {
+        secret: doctorSecret,
+        issuer: VET_DOCTOR_JWT_ISSUER,
+        audience: VET_DOCTOR_JWT_AUDIENCE,
+      },
+    );
 
   it('requires customer authentication and customer role', async () => {
     const appointmentId = randomUUID();

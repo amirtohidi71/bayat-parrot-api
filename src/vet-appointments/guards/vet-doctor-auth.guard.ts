@@ -4,10 +4,11 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { isUUID } from 'class-validator';
+import { VET_DOCTOR_SCOPE } from '../vet-doctor-auth.constants';
+import { VetDoctorTokenService } from '../vet-doctor-token.service';
 
-export const VET_DOCTOR_SCOPE = 'vet-doctor';
+export { VET_DOCTOR_SCOPE } from '../vet-doctor-auth.constants';
 
 export type VetDoctorTokenPayload = {
   scope: typeof VET_DOCTOR_SCOPE;
@@ -16,7 +17,7 @@ export type VetDoctorTokenPayload = {
 
 @Injectable()
 export class VetDoctorAuthGuard implements CanActivate {
-  constructor(private readonly jwt: JwtService) {}
+  constructor(private readonly tokens: VetDoctorTokenService) {}
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<{
@@ -27,7 +28,7 @@ export class VetDoctorAuthGuard implements CanActivate {
     const token = header?.startsWith('Bearer ') ? header.slice(7) : undefined;
     if (!token) throw new UnauthorizedException('Missing vet doctor token');
     try {
-      const payload = this.jwt.verify<VetDoctorTokenPayload>(token);
+      const payload = this.tokens.verify(token);
       if (payload?.scope !== VET_DOCTOR_SCOPE || !isUUID(payload.sub))
         throw new Error('Invalid doctor token');
       request.vetDoctor = payload;
