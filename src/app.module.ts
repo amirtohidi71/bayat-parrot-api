@@ -12,6 +12,7 @@ import { AdminModule } from './admin/admin.module';
 import { BirdPassportsModule } from './bird-passports/bird-passports.module';
 import { SalesChatModule } from './sales-chat/sales-chat.module';
 import { VetAppointmentsModule } from './vet-appointments/vet-appointments.module';
+import { resolveDatabaseSynchronize } from './config/database-synchronize';
 
 @Module({
   imports: [
@@ -28,9 +29,10 @@ import { VetAppointmentsModule } from './vet-appointments/vet-appointments.modul
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_NAME'),
         autoLoadEntities: true,
-        synchronize:
-          configService.get<string>('NODE_ENV')?.trim().toLowerCase() !==
-          'production',
+        synchronize: resolveDatabaseSynchronize(
+          configService.get<string>('NODE_ENV'),
+          configService.get<string>('DB_SYNCHRONIZE'),
+        ),
       }),
     }),
     AuthModule,
