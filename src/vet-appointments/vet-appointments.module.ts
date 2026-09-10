@@ -41,6 +41,10 @@ import {
   LiveKitSdkRoomTransport,
   LiveKitVetVideoProvider,
 } from './vet-livekit-provider';
+import { CustomerVetAppointmentQueryController } from './customer-appointment-query.controller';
+import { DoctorVetAppointmentQueryController } from './doctor-appointment-query.controller';
+import { AdminVetAppointmentQueryController } from './admin-appointment-query.controller';
+import { VetAppointmentQueryService } from './vet-appointment-query.service';
 
 export function selectVetVideoProvider(
   config: ConfigService,
@@ -87,6 +91,9 @@ export const VET_ENTITIES = [
     CustomerVetVideoController,
     DoctorVetVideoController,
     VetDoctorAuthController,
+    CustomerVetAppointmentQueryController,
+    DoctorVetAppointmentQueryController,
+    AdminVetAppointmentQueryController,
   ],
   providers: [
     VetBookingPolicy,
@@ -111,6 +118,7 @@ export const VET_ENTITIES = [
       useFactory: selectVetVideoProvider,
     },
     VetVideoService,
+    VetAppointmentQueryService,
   ],
   exports: [
     TypeOrmModule,
@@ -120,6 +128,7 @@ export const VET_ENTITIES = [
     VetPaidHoldService,
     VetManualAssignmentService,
     VetVideoService,
+    VetAppointmentQueryService,
   ],
 })
 export class VetAppointmentsModule {}
