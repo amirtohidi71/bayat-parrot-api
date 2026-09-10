@@ -38,6 +38,7 @@ export class LiveKitSdkRoomTransport implements LiveKitRoomTransport {
     providerEndDate: Date,
   ): Promise<void> {
     const serviceUrl = new URL(config.url);
+    if (serviceUrl.protocol === 'ws:') serviceUrl.protocol = 'http:';
     if (serviceUrl.protocol === 'wss:') serviceUrl.protocol = 'https:';
     const client = new RoomServiceClient(
       serviceUrl.toString().replace(/\/$/, ''),
@@ -138,6 +139,8 @@ export class LiveKitVetVideoProvider implements VetVideoProvider {
   }
 
   private config(): LiveKitConfig {
+    const environment =
+      this.configService.get<string>('NODE_ENV')?.trim().toLowerCase() ?? '';
     const url = this.configService.get<string>('LIVEKIT_URL')?.trim() ?? '';
     const apiKey =
       this.configService.get<string>('LIVEKIT_API_KEY')?.trim() ?? '';
@@ -151,8 +154,19 @@ export class LiveKitVetVideoProvider implements VetVideoProvider {
         'LiveKit provider is not configured',
       );
     }
+    const developmentLoopback =
+      environment === 'development' &&
+      parsed.protocol === 'ws:' &&
+      ['127.0.0.1', 'localhost'].includes(parsed.hostname) &&
+      parsed.port === '7880';
+    const secureUrl = ['wss:', 'https:'].includes(parsed.protocol);
+    const builtInDevelopmentCredentials =
+      apiKey === 'devkey' && apiSecret === 'secret';
+    const credentialStrengthValid =
+      (apiSecret.length >= 16 && apiSecret.length <= 1024) ||
+      (developmentLoopback && builtInDevelopmentCredentials);
     if (
-      !['wss:', 'https:'].includes(parsed.protocol) ||
+      (!secureUrl && !developmentLoopback) ||
       parsed.username ||
       parsed.password ||
       parsed.search ||
@@ -160,8 +174,7 @@ export class LiveKitVetVideoProvider implements VetVideoProvider {
       parsed.pathname !== '/' ||
       !apiKey ||
       apiKey.length > 255 ||
-      apiSecret.length < 16 ||
-      apiSecret.length > 1024
+      !credentialStrengthValid
     )
       throw new VetVideoProviderConfigurationError(
         'LiveKit provider is not configured',

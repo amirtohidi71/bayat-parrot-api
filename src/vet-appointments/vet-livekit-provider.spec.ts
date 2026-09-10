@@ -1,14 +1,20 @@
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
-import { TokenVerifier } from 'livekit-server-sdk';
+import { RoomServiceClient, TokenVerifier } from 'livekit-server-sdk';
 import {
   LiveKitRoomTransport,
+  LiveKitSdkRoomTransport,
   LiveKitVetVideoProvider,
 } from './vet-livekit-provider';
 import {
   VetVideoProviderConfigurationError,
   VetVideoProviderUnavailableError,
 } from './vet-video-provider';
+
+jest.mock('livekit-server-sdk', () => {
+  const actual = jest.requireActual('livekit-server-sdk');
+  return { ...actual, RoomServiceClient: jest.fn() };
+});
 
 describe('LiveKit vet video provider', () => {
   const apiKey = 'test-api-key';
@@ -31,6 +37,122 @@ describe('LiveKit vet video provider', () => {
       ensureRoom,
     };
   }
+
+  beforeEach(() => jest.mocked(RoomServiceClient).mockReset());
+
+  it.each([
+    ['ws://127.0.0.1:7880', 'http://127.0.0.1:7880'],
+    ['wss://video.example.test', 'https://video.example.test'],
+  ])(
+    'passes %s to RoomServiceClient as %s',
+    async (configuredUrl, expectedServiceUrl) => {
+      const createRoom = jest.fn().mockResolvedValue({});
+      jest
+        .mocked(RoomServiceClient)
+        .mockImplementation(() => ({ createRoom }) as never);
+      const transport = new LiveKitSdkRoomTransport();
+      await transport.ensureRoom(
+        {
+          url: configuredUrl,
+          apiKey,
+          apiSecret,
+        },
+        'test-room',
+        new Date(Date.now() + 60_000),
+      );
+
+      expect(RoomServiceClient).toHaveBeenCalledWith(
+        expectedServiceUrl,
+        apiKey,
+        apiSecret,
+        { requestTimeout: 5 },
+      );
+      expect(createRoom).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'test-room' }),
+      );
+    },
+  );
+
+  it.each(['ws://127.0.0.1:7880', 'ws://localhost:7880'])(
+    'allows built-in development credentials for loopback URL %s',
+    async (url) => {
+      const { provider, ensureRoom } = subject({
+        NODE_ENV: 'development',
+        LIVEKIT_URL: url,
+        LIVEKIT_API_KEY: 'devkey',
+        LIVEKIT_API_SECRET: 'secret',
+      });
+      const appointmentId = randomUUID();
+      const meetingId = provider.meetingId(appointmentId);
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 60_000);
+
+      await provider.ensureMeeting(meetingId, expiresAt);
+      const credential = await provider.issueAccess(
+        randomUUID(),
+        appointmentId,
+        meetingId,
+        { type: 'DOCTOR', id: randomUUID() },
+        now,
+        expiresAt,
+      );
+
+      expect(ensureRoom).toHaveBeenCalledWith(
+        expect.objectContaining({ url }),
+        meetingId,
+        expiresAt,
+      );
+      expect(credential.serverUrl).toBe(url);
+      await expect(
+        new TokenVerifier('devkey', 'secret').verify(credential.token),
+      ).resolves.toBeDefined();
+    },
+  );
+
+  it.each(['production', 'staging', 'preview', 'unknown'])(
+    'rejects built-in development credentials in %s',
+    async (environment) => {
+      const { provider, ensureRoom } = subject({
+        NODE_ENV: environment,
+        LIVEKIT_URL: 'ws://127.0.0.1:7880',
+        LIVEKIT_API_KEY: 'devkey',
+        LIVEKIT_API_SECRET: 'secret',
+      });
+      await expect(
+        provider.ensureMeeting(provider.meetingId(randomUUID()), new Date()),
+      ).rejects.toThrow(VetVideoProviderConfigurationError);
+      expect(ensureRoom).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects non-loopback insecure WebSocket URLs in development', async () => {
+    const { provider, ensureRoom } = subject({
+      NODE_ENV: 'development',
+      LIVEKIT_URL: 'ws://192.0.2.10:7880',
+      LIVEKIT_API_KEY: 'devkey',
+      LIVEKIT_API_SECRET: 'secret',
+    });
+    await expect(
+      provider.ensureMeeting(provider.meetingId(randomUUID()), new Date()),
+    ).rejects.toThrow(VetVideoProviderConfigurationError);
+    expect(ensureRoom).not.toHaveBeenCalled();
+  });
+
+  it.each(['wss://video.example.test', 'https://video.example.test'])(
+    'preserves secure URL support for %s',
+    async (url) => {
+      const { provider, ensureRoom } = subject({ LIVEKIT_URL: url });
+      await provider.ensureMeeting(
+        provider.meetingId(randomUUID()),
+        new Date(),
+      );
+      expect(ensureRoom).toHaveBeenCalledWith(
+        expect.objectContaining({ url }),
+        expect.any(String),
+        expect.any(Date),
+      );
+    },
+  );
 
   it('uses deterministic appointment-linked room identity and idempotent transport', async () => {
     const { provider, ensureRoom } = subject();
