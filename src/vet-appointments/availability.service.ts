@@ -22,6 +22,11 @@ import {
   AvailabilitySlotResponseDto,
 } from './dto/availability-response.dto';
 import {
+  BookableVetSlotResponseDto,
+  ListBookableVetSlotsDto,
+} from './dto/customer-availability.dto';
+import type { BookableVetSlotRow } from './dto/customer-availability.dto';
+import {
   generateAvailabilitySlots,
   parseInstant,
   SlotGeometry,
@@ -29,6 +34,7 @@ import {
 
 const occupant = `SELECT 1 FROM public.vet_appointments a WHERE a."slotId" = s.id
   AND a.status IN ('PAYMENT_PENDING','CONFIRMED','COMPLETED','NO_SHOW')`;
+const MAX_BOOKABLE_SLOT_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class VetAvailabilityService {
@@ -102,6 +108,47 @@ export class VetAvailabilityService {
       order: { startsAt: 'ASC', id: 'ASC' },
     });
     return slots.map(AvailabilitySlotResponseDto.from);
+  }
+
+  async bookableSlots(query: ListBookableVetSlotsDto) {
+    const from = parseInstant(query.from);
+    const to = parseInstant(query.to);
+    const range = to - from;
+    if (range <= 0)
+      throw new BadRequestException('Filter start must precede end');
+    if (range > MAX_BOOKABLE_SLOT_RANGE_MS)
+      throw new BadRequestException('Availability range cannot exceed 31 days');
+
+    const slots = await this.source
+      .getRepository(VetAppointmentSlot)
+      .createQueryBuilder('s')
+      .innerJoin(
+        VetAvailabilityWindow,
+        'w',
+        'w.id = s.availabilityWindowId AND w.doctorId = s.doctorId',
+      )
+      .innerJoin(VetDoctor, 'd', 'd.id = s.doctorId')
+      .select('s.id', 'slotId')
+      .addSelect('s.doctorId', 'doctorId')
+      .addSelect('d.displayName', 'doctorDisplayName')
+      .addSelect('s.startsAt', 'startsAt')
+      .addSelect('s.endsAt', 'endsAt')
+      .where('s.status = :slotStatus', {
+        slotStatus: VetSlotStatus.AVAILABLE,
+      })
+      .andWhere('w.status = :windowStatus', {
+        windowStatus: VetAvailabilityStatus.ACTIVE,
+      })
+      .andWhere('d.active = TRUE')
+      .andWhere('s.startsAt >= :from', { from: new Date(from) })
+      .andWhere('s.startsAt < :to', { to: new Date(to) })
+      .andWhere('s.startsAt > transaction_timestamp()')
+      .andWhere(`NOT EXISTS (${occupant})`)
+      .orderBy('s.startsAt', 'ASC')
+      .addOrderBy('s.id', 'ASC')
+      .getRawMany<BookableVetSlotRow>();
+
+    return slots.map(BookableVetSlotResponseDto.from);
   }
 
   async cancel(id: string) {

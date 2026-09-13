@@ -45,6 +45,7 @@ import { CustomerVetAppointmentQueryController } from './customer-appointment-qu
 import { DoctorVetAppointmentQueryController } from './doctor-appointment-query.controller';
 import { AdminVetAppointmentQueryController } from './admin-appointment-query.controller';
 import { VetAppointmentQueryService } from './vet-appointment-query.service';
+import { CustomerVetAvailabilityController } from './customer-availability.controller';
 
 export function selectVetVideoProvider(
   config: ConfigService,
@@ -86,6 +87,7 @@ export const VET_ENTITIES = [
   ],
   controllers: [
     AdminVetAvailabilityController,
+    CustomerVetAvailabilityController,
     AdminVetManualAssignmentController,
     CustomerVetBookingController,
     CustomerVetVideoController,
