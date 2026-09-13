@@ -46,6 +46,8 @@ import { DoctorVetAppointmentQueryController } from './doctor-appointment-query.
 import { AdminVetAppointmentQueryController } from './admin-appointment-query.controller';
 import { VetAppointmentQueryService } from './vet-appointment-query.service';
 import { CustomerVetAvailabilityController } from './customer-availability.controller';
+import { SmsModule } from '../common/sms/sms.module';
+import { VetReminderWorker } from './vet-reminder.worker';
 
 export function selectVetVideoProvider(
   config: ConfigService,
@@ -80,6 +82,7 @@ export const VET_ENTITIES = [
   imports: [
     TypeOrmModule.forFeature(VET_ENTITIES),
     AdminModule,
+    SmsModule,
     JwtModule.register({}),
     ThrottlerModule.forRoot([
       { name: 'default', ttl: 15 * 60 * 1000, limit: 10 },
@@ -121,6 +124,7 @@ export const VET_ENTITIES = [
     },
     VetVideoService,
     VetAppointmentQueryService,
+    VetReminderWorker,
   ],
   exports: [
     TypeOrmModule,
