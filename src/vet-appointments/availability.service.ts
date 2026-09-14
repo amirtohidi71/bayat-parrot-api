@@ -20,7 +20,9 @@ import {
 import {
   AvailabilityResponseDto,
   AvailabilitySlotResponseDto,
+  ManualAvailabilitySlotResponseDto,
 } from './dto/availability-response.dto';
+import type { ManualAvailabilitySlotResponse } from './dto/availability-response.dto';
 import {
   BookableVetSlotResponseDto,
   ListBookableVetSlotsDto,
@@ -31,6 +33,8 @@ import {
   parseInstant,
   SlotGeometry,
 } from './availability-slot-generation';
+import { CreateManualAvailabilitySlotsDto } from './dto/manual-availability-slot.dto';
+import { parseManualAvailabilitySlots } from './manual-availability-slot';
 
 const occupant = `SELECT 1 FROM public.vet_appointments a WHERE a."slotId" = s.id
   AND a.status IN ('PAYMENT_PENDING','CONFIRMED','COMPLETED','NO_SHOW')`;
@@ -48,6 +52,54 @@ export class VetAvailabilityService {
       await this.activeDoctor(manager, input.doctorId);
       return this.insert(manager, input.doctorId, input, admin, slots);
     });
+  }
+
+  async createManualSlots(
+    input: CreateManualAvailabilitySlotsDto,
+    admin: string,
+  ) {
+    this.uuid(input.doctorId);
+    this.admin(admin);
+    const slots = parseManualAvailabilitySlots(input.slots);
+    return this.write(
+      input.doctorId,
+      async (manager) => {
+        await this.activeDoctor(manager, input.doctorId);
+        const [{ now }] = await manager.query<Array<{ now: Date }>>(
+          'SELECT transaction_timestamp() AS now',
+        );
+        if (slots.some((slot) => slot.startsAt.getTime() <= now.getTime()))
+          throw new BadRequestException(
+            'Manual availability slots must be future',
+          );
+
+        const created: ManualAvailabilitySlotResponse[] = [];
+        for (const slot of slots) {
+          const slotDurationMinutes =
+            (slot.endsAt.getTime() - slot.startsAt.getTime()) / 60_000;
+          const result = await this.insert(
+            manager,
+            input.doctorId,
+            {
+              startsAt: slot.startsAt.toISOString(),
+              endsAt: slot.endsAt.toISOString(),
+              slotDurationMinutes,
+              timeZone: 'Asia/Tehran',
+            },
+            admin,
+            [slot],
+          );
+          created.push(
+            ManualAvailabilitySlotResponseDto.from(
+              result.window,
+              result.slots[0],
+            ),
+          );
+        }
+        return created;
+      },
+      'Manual availability slots conflict with current scheduling state',
+    );
   }
 
   async list(query: ListAvailabilityDto) {
@@ -309,6 +361,7 @@ export class VetAvailabilityService {
   private async write<T>(
     doctorId: string,
     action: (manager: EntityManager) => Promise<T>,
+    conflictMessage = 'Availability conflicts with current scheduling state',
   ): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
@@ -344,9 +397,7 @@ export class VetAvailabilityService {
             '57014',
           ].includes(code ?? '')
         )
-          throw new ConflictException(
-            'Availability conflicts with current scheduling state',
-          );
+          throw new ConflictException(conflictMessage);
         if (['22007', '22008', '22P02', '22003'].includes(code ?? ''))
           throw new BadRequestException('Invalid availability input');
         throw new InternalServerErrorException('Availability operation failed');

@@ -11,6 +11,7 @@ import type { Server } from 'node:http';
 import request from 'supertest';
 import { AdminAuthGuard } from '../admin/guards/admin-auth.guard';
 import { AdminVetAvailabilityController } from './admin-availability.controller';
+import { AdminVetManualAvailabilityController } from './admin-manual-availability.controller';
 import { VetAvailabilityService } from './availability.service';
 
 describe('Admin vet availability HTTP with existing JWT guard', () => {
@@ -19,6 +20,7 @@ describe('Admin vet availability HTTP with existing JWT guard', () => {
   let jwt: JwtService;
   const id = randomUUID();
   const base = '/admin/vet/availability-windows';
+  const manualBase = '/admin/vet/availability-slots/manual';
   const input = {
     doctorId: randomUUID(),
     startsAt: '2030-01-02T10:00:00Z',
@@ -27,6 +29,7 @@ describe('Admin vet availability HTTP with existing JWT guard', () => {
   };
   const service = {
     create: jest.fn(),
+    createManualSlots: jest.fn(),
     list: jest.fn(),
     read: jest.fn(),
     slots: jest.fn(),
@@ -42,7 +45,10 @@ describe('Admin vet availability HTTP with existing JWT guard', () => {
       imports: [
         JwtModule.register({ secret: randomBytes(32).toString('hex') }),
       ],
-      controllers: [AdminVetAvailabilityController],
+      controllers: [
+        AdminVetAvailabilityController,
+        AdminVetManualAvailabilityController,
+      ],
       providers: [
         AdminAuthGuard,
         { provide: VetAvailabilityService, useValue: service },
@@ -91,6 +97,7 @@ describe('Admin vet availability HTTP with existing JWT guard', () => {
         await request(server).get(path).set('Authorization', token).expect(401);
       for (const path of [
         base,
+        manualBase,
         `${base}/${id}/cancel`,
         `${base}/${id}/retire`,
         `${base}/${id}/replace`,
@@ -116,6 +123,100 @@ describe('Admin vet availability HTTP with existing JWT guard', () => {
     expect(service.create).toHaveBeenCalledWith(
       { ...input, timeZone: 'Asia/Tehran' },
       'test-admin',
+    );
+  });
+
+  it('creates a validated manual slot batch as the authenticated admin', async () => {
+    const slots = [
+      {
+        startsAt: '2030-01-02T09:00:00+03:30',
+        endsAt: '2030-01-02T09:30:00+03:30',
+      },
+      {
+        startsAt: '2030-01-02T18:00:00+03:30',
+        endsAt: '2030-01-02T18:15:00+03:30',
+      },
+    ];
+    service.createManualSlots.mockResolvedValue([
+      { windowId: id, slotId: randomUUID(), ...slots[0] },
+    ]);
+    await request(server)
+      .post(manualBase)
+      .set('Authorization', authorization())
+      .send({
+        doctorId: input.doctorId,
+        slots: slots.map((slot) => ({ ...slot, status: 'AVAILABLE' })),
+        createdByAdmin: 'attacker',
+      })
+      .expect(201);
+    expect(service.createManualSlots).toHaveBeenCalledWith(
+      { doctorId: input.doctorId, slots },
+      'test-admin',
+    );
+  });
+
+  it.each([
+    { slots: [] },
+    { slots: undefined },
+    { slots: [{ startsAt: 'bad', endsAt: '2030-01-02T09:30:00Z' }] },
+    {
+      slots: [
+        {
+          startsAt: '2030-01-02T09:00:00',
+          endsAt: '2030-01-02T09:30:00+03:30',
+        },
+      ],
+    },
+    {
+      slots: Array.from({ length: 51 }, () => ({
+        startsAt: '2030-01-02T09:00:00Z',
+        endsAt: '2030-01-02T09:30:00Z',
+      })),
+    },
+    { doctorId: 'bad', slots: [] },
+  ])('rejects malformed manual batch %j', async (change) => {
+    const valid = {
+      doctorId: input.doctorId,
+      slots: [
+        {
+          startsAt: '2030-01-02T09:00:00+03:30',
+          endsAt: '2030-01-02T09:30:00+03:30',
+        },
+      ],
+    };
+    await request(server)
+      .post(manualBase)
+      .set('Authorization', authorization())
+      .send({ ...valid, ...change })
+      .expect(400);
+    expect(service.createManualSlots).not.toHaveBeenCalled();
+  });
+
+  it('returns the stable manual-slot conflict as HTTP 409', async () => {
+    service.createManualSlots.mockRejectedValue(
+      new ConflictException(
+        'Manual availability slots conflict with current scheduling state',
+      ),
+    );
+    const response = await request(server)
+      .post(manualBase)
+      .set('Authorization', authorization())
+      .send({
+        doctorId: input.doctorId,
+        slots: [
+          {
+            startsAt: '2030-01-02T09:00:00+03:30',
+            endsAt: '2030-01-02T09:30:00+03:30',
+          },
+        ],
+      })
+      .expect(409);
+    expect(response.body as unknown).toEqual(
+      expect.objectContaining({
+        statusCode: 409,
+        message:
+          'Manual availability slots conflict with current scheduling state',
+      }),
     );
   });
 

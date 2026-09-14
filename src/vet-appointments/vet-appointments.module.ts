@@ -48,6 +48,9 @@ import { VetAppointmentQueryService } from './vet-appointment-query.service';
 import { CustomerVetAvailabilityController } from './customer-availability.controller';
 import { SmsModule } from '../common/sms/sms.module';
 import { VetReminderWorker } from './vet-reminder.worker';
+import { AdminVetManualAvailabilityController } from './admin-manual-availability.controller';
+import { AdminVetDoctorsController } from './admin-vet-doctors.controller';
+import { VetDoctorDirectoryService } from './vet-doctor-directory.service';
 
 export function selectVetVideoProvider(
   config: ConfigService,
@@ -90,6 +93,8 @@ export const VET_ENTITIES = [
   ],
   controllers: [
     AdminVetAvailabilityController,
+    AdminVetManualAvailabilityController,
+    AdminVetDoctorsController,
     CustomerVetAvailabilityController,
     AdminVetManualAssignmentController,
     CustomerVetBookingController,
@@ -125,6 +130,7 @@ export const VET_ENTITIES = [
     VetVideoService,
     VetAppointmentQueryService,
     VetReminderWorker,
+    VetDoctorDirectoryService,
   ],
   exports: [
     TypeOrmModule,

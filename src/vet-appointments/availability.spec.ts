@@ -13,6 +13,10 @@ import {
 } from './dto/availability-response.dto';
 import { VetAvailabilityWindow } from './entities/availability-window.entity';
 import { VetAppointmentSlot } from './entities/appointment-slot.entity';
+import {
+  MAX_MANUAL_AVAILABILITY_SLOTS,
+  parseManualAvailabilitySlots,
+} from './manual-availability-slot';
 
 const input = {
   doctorId: randomUUID(),
@@ -23,6 +27,67 @@ const input = {
 };
 
 describe('Vet availability generation and service boundary', () => {
+  const manualSlots = [
+    {
+      startsAt: '2030-01-02T09:00:00+03:30',
+      endsAt: '2030-01-02T09:30:00+03:30',
+    },
+    {
+      startsAt: '2030-01-02T18:00:00+03:30',
+      endsAt: '2030-01-02T18:15:00+03:30',
+    },
+  ];
+
+  it('accepts manual slots with mixed durations and gaps on one Tehran day', () => {
+    const slots = parseManualAvailabilitySlots(manualSlots);
+    expect(slots).toEqual([
+      {
+        startsAt: new Date('2030-01-02T05:30:00.000Z'),
+        endsAt: new Date('2030-01-02T06:00:00.000Z'),
+      },
+      {
+        startsAt: new Date('2030-01-02T14:30:00.000Z'),
+        endsAt: new Date('2030-01-02T14:45:00.000Z'),
+      },
+    ]);
+  });
+
+  it.each([
+    { slots: [] },
+    {
+      slots: Array.from(
+        { length: MAX_MANUAL_AVAILABILITY_SLOTS + 1 },
+        () => manualSlots[0],
+      ),
+    },
+    { slots: [{ ...manualSlots[0], startsAt: '2030-01-02T09:00:00' }] },
+    {
+      slots: [{ ...manualSlots[0], startsAt: '2030-01-02T09:00:01+03:30' }],
+    },
+    { slots: [{ ...manualSlots[0], endsAt: manualSlots[0].startsAt }] },
+    {
+      slots: [
+        manualSlots[0],
+        {
+          startsAt: '2030-01-03T09:00:00+03:30',
+          endsAt: '2030-01-03T09:30:00+03:30',
+        },
+      ],
+    },
+    {
+      slots: [
+        {
+          startsAt: '2030-01-02T23:30:00+03:30',
+          endsAt: '2030-01-03T00:15:00+03:30',
+        },
+      ],
+    },
+  ])('rejects invalid manual slot batch %#', ({ slots }) => {
+    expect(() => parseManualAvailabilitySlots(slots)).toThrow(
+      BadRequestException,
+    );
+  });
+
   it('generates every contiguous boundary including the exact final end', () => {
     const slots = generateAvailabilitySlots(input);
     expect(slots).toHaveLength(4);
@@ -179,6 +244,33 @@ describe('Vet availability generation and service boundary', () => {
       );
     },
   );
+
+  it('maps manual overlap and duplicate database conflicts to a stable 409', async () => {
+    const transaction = jest
+      .fn()
+      .mockRejectedValue(
+        new QueryFailedError(
+          'SECRET SQL',
+          [],
+          Object.assign(new Error('PRIVATE'), { code: '23P01' }),
+        ),
+      );
+    const service = new VetAvailabilityService({
+      transaction,
+    } as unknown as DataSource);
+    await expect(
+      service.createManualSlots(
+        { doctorId: input.doctorId, slots: manualSlots },
+        'test-admin',
+      ),
+    ).rejects.toThrow(
+      'Manual availability slots conflict with current scheduling state',
+    );
+    expect(transaction).toHaveBeenCalledWith(
+      'READ COMMITTED',
+      expect.any(Function),
+    );
+  });
 
   it.each(['25000', '42P01', '42703', undefined])(
     'fails closed for unexpected drift/isolation %s',

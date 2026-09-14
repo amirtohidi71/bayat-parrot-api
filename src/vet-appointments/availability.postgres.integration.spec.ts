@@ -150,6 +150,199 @@ describeDatabase(
       expect(result.window).not.toHaveProperty('doctor');
     });
 
+    it('creates mixed-duration manual slots with gaps as matching window-slot pairs', async () => {
+      const doctorId = await doctor();
+      const result = await service.createManualSlots(
+        {
+          doctorId,
+          slots: [
+            {
+              startsAt: '2030-01-02T09:00:00+03:30',
+              endsAt: '2030-01-02T09:30:00+03:30',
+            },
+            {
+              startsAt: '2030-01-02T18:00:00+03:30',
+              endsAt: '2030-01-02T18:15:00+03:30',
+            },
+          ],
+        },
+        'test-admin',
+      );
+      expect(result).toHaveLength(2);
+      expect(result.map((item) => Object.keys(item).sort())).toEqual([
+        ['endsAt', 'slotId', 'startsAt', 'windowId'],
+        ['endsAt', 'slotId', 'startsAt', 'windowId'],
+      ]);
+      expect(result[0].endsAt.getTime() - result[0].startsAt.getTime()).toBe(
+        30 * 60_000,
+      );
+      expect(result[1].endsAt.getTime() - result[1].startsAt.getTime()).toBe(
+        15 * 60_000,
+      );
+      expect(await counts(doctorId)).toEqual({
+        windows: 2,
+        active: 2,
+        slots: 2,
+        usable: 2,
+      });
+      for (const item of result) {
+        const [window, slot] = await Promise.all([
+          service.read(item.windowId),
+          service.slots(item.windowId),
+        ]);
+        expect(slot).toHaveLength(1);
+        expect(slot[0].id).toBe(item.slotId);
+        expect(window.startsAt).toEqual(slot[0].startsAt);
+        expect(window.endsAt).toEqual(slot[0].endsAt);
+      }
+    });
+
+    it('rolls back the full manual batch when a later slot overlaps', async () => {
+      const doctorId = await doctor();
+      await service.createManualSlots(
+        {
+          doctorId,
+          slots: [
+            {
+              startsAt: '2030-01-02T09:00:00+03:30',
+              endsAt: '2030-01-02T09:30:00+03:30',
+            },
+          ],
+        },
+        'test-admin',
+      );
+      await expect(
+        service.createManualSlots(
+          {
+            doctorId,
+            slots: [
+              {
+                startsAt: '2030-01-02T10:00:00+03:30',
+                endsAt: '2030-01-02T10:15:00+03:30',
+              },
+              {
+                startsAt: '2030-01-02T09:15:00+03:30',
+                endsAt: '2030-01-02T09:45:00+03:30',
+              },
+            ],
+          },
+          'test-admin',
+        ),
+      ).rejects.toThrow(
+        'Manual availability slots conflict with current scheduling state',
+      );
+      expect(await counts(doctorId)).toEqual({
+        windows: 1,
+        active: 1,
+        slots: 1,
+        usable: 1,
+      });
+    });
+
+    it('rejects duplicate manual slots without retaining partial rows', async () => {
+      const doctorId = await doctor();
+      const duplicate = {
+        startsAt: '2030-01-02T11:00:00+03:30',
+        endsAt: '2030-01-02T11:30:00+03:30',
+      };
+      await expect(
+        service.createManualSlots(
+          { doctorId, slots: [duplicate, duplicate] },
+          'test-admin',
+        ),
+      ).rejects.toThrow(ConflictException);
+      expect(await counts(doctorId)).toEqual({
+        windows: 0,
+        active: 0,
+        slots: 0,
+        usable: 0,
+      });
+    });
+
+    it('rejects manual slots for inactive doctors and past DB time', async () => {
+      const inactiveDoctorId = await doctor(false);
+      const activeDoctorId = await doctor();
+      await expect(
+        service.createManualSlots(
+          {
+            doctorId: inactiveDoctorId,
+            slots: [
+              {
+                startsAt: '2030-01-02T09:00:00+03:30',
+                endsAt: '2030-01-02T09:30:00+03:30',
+              },
+            ],
+          },
+          'test-admin',
+        ),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        service.createManualSlots(
+          {
+            doctorId: activeDoctorId,
+            slots: [
+              {
+                startsAt: '2020-01-02T09:00:00+03:30',
+                endsAt: '2020-01-02T09:30:00+03:30',
+              },
+            ],
+          },
+          'test-admin',
+        ),
+      ).rejects.toThrow('Manual availability slots must be future');
+      expect((await counts(inactiveDoctorId)).windows).toBe(0);
+      expect((await counts(activeDoctorId)).windows).toBe(0);
+    });
+
+    it('rejects a manual batch spanning different Tehran calendar days', async () => {
+      const doctorId = await doctor();
+      await expect(
+        service.createManualSlots(
+          {
+            doctorId,
+            slots: [
+              {
+                startsAt: '2030-01-02T09:00:00+03:30',
+                endsAt: '2030-01-02T09:30:00+03:30',
+              },
+              {
+                startsAt: '2030-01-03T09:00:00+03:30',
+                endsAt: '2030-01-03T09:30:00+03:30',
+              },
+            ],
+          },
+          'test-admin',
+        ),
+      ).rejects.toThrow(
+        'Manual availability slots must belong to one Tehran calendar day',
+      );
+      expect((await counts(doctorId)).windows).toBe(0);
+    });
+
+    it('serializes concurrent overlapping manual batches per doctor', async () => {
+      const doctorId = await doctor();
+      const create = () =>
+        service.createManualSlots(
+          {
+            doctorId,
+            slots: [
+              {
+                startsAt: '2030-01-02T12:00:00+03:30',
+                endsAt: '2030-01-02T12:30:00+03:30',
+              },
+            ],
+          },
+          'test-admin',
+        );
+      await race(doctorId, create, create);
+      expect(await counts(doctorId)).toEqual({
+        windows: 1,
+        active: 1,
+        slots: 1,
+        usable: 1,
+      });
+    });
+
     it('rolls back the window and all slots when a real database slot insert fails', async () => {
       const doctorId = await doctor();
       await rejectSlotWrites(doctorId);

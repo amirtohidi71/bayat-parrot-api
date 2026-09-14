@@ -33,3 +33,25 @@ export class AvailabilitySlotResponseDto {
     };
   }
 }
+
+export type ManualAvailabilitySlotResponse = {
+  windowId: string;
+  slotId: string;
+  startsAt: Date;
+  endsAt: Date;
+};
+
+export class ManualAvailabilitySlotResponseDto {
+  static from(
+    this: void,
+    window: Pick<VetAvailabilityWindow, 'id'>,
+    slot: Pick<VetAppointmentSlot, 'id' | 'startsAt' | 'endsAt'>,
+  ): ManualAvailabilitySlotResponse {
+    return {
+      windowId: window.id,
+      slotId: slot.id,
+      startsAt: slot.startsAt,
+      endsAt: slot.endsAt,
+    };
+  }
+}
