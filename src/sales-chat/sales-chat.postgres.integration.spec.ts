@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
@@ -231,6 +232,117 @@ describeDatabase('Sales Chat PostgreSQL integration', () => {
     ).toBe(1);
   });
 
+  it('gives ad1/ad2 both areas while preserving ownership, unread, and reassignment boundaries', async () => {
+    const [ad1, ad2, ad3, ad4, ad5, ad6] = await Promise.all(
+      ['ad1', 'ad2', 'ad3', 'ad4', 'ad5', 'ad6'].map(agent),
+    );
+
+    for (const dualAgent of [ad1, ad2]) {
+      for (const area of [SalesAgentScope.PARROT, SalesAgentScope.PRODUCTS]) {
+        const conversation = await service.openCustomerConversation(USER_1, {
+          area,
+        });
+        const queue = await service.listAgentQueue(
+          dualAgent.id,
+          dualAgent.scope,
+        );
+        expect(queue.items.map((item) => item.id)).toContain(conversation.id);
+        await service.claimConversation(
+          dualAgent.id,
+          dualAgent.scope,
+          conversation.id,
+        );
+        await service.sendCustomerMessage(USER_1, conversation.id, {
+          clientMessageId: crypto.randomUUID(),
+          text: 'customer message',
+        });
+        await expect(
+          service.getAgentMessages(
+            dualAgent.id,
+            dualAgent.scope,
+            conversation.id,
+            {
+              afterSequence: 0,
+              limit: 50,
+            },
+          ),
+        ).resolves.toBeDefined();
+        await expect(
+          service.sendAgentMessage(
+            dualAgent.id,
+            dualAgent.scope,
+            conversation.id,
+            {
+              clientMessageId: crypto.randomUUID(),
+              text: 'agent reply',
+            },
+          ),
+        ).resolves.toMatchObject({ duplicate: false });
+        await service.closeAgentConversation(
+          dualAgent.id,
+          dualAgent.scope,
+          conversation.id,
+        );
+      }
+    }
+
+    const products = await service.openCustomerConversation(USER_1, {
+      area: SalesAgentScope.PRODUCTS,
+    });
+    for (const parrotOnly of [ad3, ad4]) {
+      await expect(
+        service.claimConversation(parrotOnly.id, parrotOnly.scope, products.id),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(
+        (
+          await service.listAgentQueue(parrotOnly.id, parrotOnly.scope)
+        ).items.map((item) => item.id),
+      ).not.toContain(products.id);
+    }
+    const parrot = await service.openCustomerConversation(USER_2, {
+      area: SalesAgentScope.PARROT,
+    });
+    for (const productsOnly of [ad5, ad6]) {
+      await expect(
+        service.claimConversation(
+          productsOnly.id,
+          productsOnly.scope,
+          parrot.id,
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(
+        (
+          await service.listAgentQueue(productsOnly.id, productsOnly.scope)
+        ).items.map((item) => item.id),
+      ).not.toContain(parrot.id);
+    }
+
+    await service.claimConversation(ad1.id, ad1.scope, products.id);
+    await service.sendCustomerMessage(USER_1, products.id, {
+      clientMessageId: crypto.randomUUID(),
+      text: 'unread products message',
+    });
+    expect(await service.getAgentUnreadCount(ad1.id, ad1.scope)).toEqual({
+      unreadCount: 1,
+    });
+    await expect(
+      service.getAgentMessages(ad2.id, ad2.scope, products.id, {
+        afterSequence: 0,
+        limit: 50,
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    await service.reassignConversation(products.id, ad2.id, 'pahlevan');
+    await expect(
+      service.reassignConversation(products.id, ad3.id, 'pahlevan'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.reassignConversation(parrot.id, ad5.id, 'pahlevan'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await service.reassignConversation(parrot.id, ad1.id, 'pahlevan');
+    await service.reassignConversation(parrot.id, ad2.id, 'pahlevan');
+  });
+
   it('keeps TEXT ordering/idempotency, ownership, unread and assignment history intact', async () => {
     const conversation = await service.openCustomerConversation(USER_1, {
       area: SalesAgentScope.PARROT,
@@ -242,21 +354,21 @@ describeDatabase('Sales Chat PostgreSQL integration', () => {
     const messageId = '90000001-0000-4000-8000-000000000001';
     const first = await service.sendCustomerMessage(USER_1, conversation.id, {
       clientMessageId: messageId,
-      text: 'سلام 🦜',
+      text: 'Ø³Ù„Ø§Ù… ðŸ¦œ',
     });
     const duplicate = await service.sendCustomerMessage(
       USER_1,
       conversation.id,
       {
         clientMessageId: messageId,
-        text: 'متن retry نادیده گرفته می‌شود',
+        text: 'Ù…ØªÙ† retry Ù†Ø§Ø¯ÛŒØ¯Ù‡ Ú¯Ø±ÙØªÙ‡ Ù…ÛŒâ€ŒØ´ÙˆØ¯',
       },
     );
     expect(duplicate.item.id).toBe(first.item.id);
     expect(duplicate.duplicate).toBe(true);
     await service.sendAgentMessage(ad1.id, ad1.scope, conversation.id, {
       clientMessageId: '90000002-0000-4000-8000-000000000002',
-      text: 'پاسخ مشاور',
+      text: 'Ù¾Ø§Ø³Ø® Ù…Ø´Ø§ÙˆØ±',
     });
     const page = await service.getCustomerMessages(USER_1, conversation.id, {
       afterSequence: 0,

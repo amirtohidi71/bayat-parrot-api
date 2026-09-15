@@ -130,38 +130,81 @@ describe('ChatPushService', () => {
     );
   });
 
-  it('notifies only active agents resolved for the conversation area', async () => {
+  it('notifies the scope agents and ad1/ad2 once for each area', async () => {
+    agents.find.mockResolvedValue([
+      {
+        id: '30000001-0000-4000-8000-000000000001',
+        username: 'ad1',
+        scope: SalesAgentScope.PARROT,
+        active: true,
+      },
+      {
+        id: '30000002-0000-4000-8000-000000000002',
+        username: 'ad2',
+        scope: SalesAgentScope.PARROT,
+        active: true,
+      },
+      {
+        id: '30000003-0000-4000-8000-000000000003',
+        username: 'ad3',
+        scope: SalesAgentScope.PARROT,
+        active: true,
+      },
+      {
+        id: '30000004-0000-4000-8000-000000000004',
+        username: 'ad4',
+        scope: SalesAgentScope.PARROT,
+        active: true,
+      },
+      {
+        id: '30000005-0000-4000-8000-000000000005',
+        username: 'ad5',
+        scope: SalesAgentScope.PRODUCTS,
+        active: true,
+      },
+      {
+        id: '30000006-0000-4000-8000-000000000006',
+        username: 'ad6',
+        scope: SalesAgentScope.PRODUCTS,
+        active: true,
+      },
+    ]);
     rows.push(
-      {
-        id: 'parrot-agent-sub',
+      ...['ad1', 'ad2', 'ad3', 'ad4', 'ad5', 'ad6'].map((username, index) => ({
+        id: `agent-sub-${username}`,
         ownerType: ChatPushOwnerType.SALES_AGENT,
         customerUserId: null,
-        salesAgentId: 'agent-1',
-        endpoint: 'https://push.example/parrot-agent',
+        salesAgentId: `3000000${index + 1}-0000-4000-8000-00000000000${index + 1}`,
+        endpoint: `https://push.example/${username}`,
         p256dh: 'p',
         auth: 'a',
-      },
-      {
-        id: 'products-agent-sub',
-        ownerType: ChatPushOwnerType.SALES_AGENT,
-        customerUserId: null,
-        salesAgentId: 'agent-5',
-        endpoint: 'https://push.example/products-agent',
-        p256dh: 'p',
-        auth: 'a',
-      },
+      })),
     );
 
     await service.notifyAreaAgents(SalesAgentScope.PARROT, 'conversation-1');
+    expect(
+      client.sendNotification.mock.calls
+        .map(([subscription]) => subscription.endpoint)
+        .sort(),
+    ).toEqual([
+      'https://push.example/ad1',
+      'https://push.example/ad2',
+      'https://push.example/ad3',
+      'https://push.example/ad4',
+    ]);
 
-    expect(agents.find).toHaveBeenCalledWith({
-      where: { scope: SalesAgentScope.PARROT, active: true },
-      select: { id: true },
-    });
-    expect(client.sendNotification).toHaveBeenCalledTimes(1);
-    expect(client.sendNotification.mock.calls[0][0].endpoint).toBe(
-      'https://push.example/parrot-agent',
-    );
+    client.sendNotification.mockClear();
+    await service.notifyAreaAgents(SalesAgentScope.PRODUCTS, 'conversation-2');
+    expect(
+      client.sendNotification.mock.calls
+        .map(([subscription]) => subscription.endpoint)
+        .sort(),
+    ).toEqual([
+      'https://push.example/ad1',
+      'https://push.example/ad2',
+      'https://push.example/ad5',
+      'https://push.example/ad6',
+    ]);
   });
 
   it('cleans an expired subscription without failing delivery', async () => {

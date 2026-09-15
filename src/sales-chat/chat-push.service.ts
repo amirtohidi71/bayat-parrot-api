@@ -1,3 +1,4 @@
+import { allowedSalesChatAreas } from './sales-chat-area.policy';
 import {
   ConflictException,
   Inject,
@@ -140,14 +141,17 @@ export class ChatPushService {
     conversationId: string,
   ): Promise<void> {
     const agents = await this.agents.find({
-      where: { scope: area, active: true },
-      select: { id: true },
+      where: { active: true },
+      select: { id: true, username: true, scope: true, active: true },
     });
-    if (!agents.length) return;
+    const eligibleAgents = agents.filter((agent) =>
+      allowedSalesChatAreas(agent).includes(area),
+    );
+    if (!eligibleAgents.length) return;
     const subscriptions = await this.subscriptions.find({
       where: {
         ownerType: ChatPushOwnerType.SALES_AGENT,
-        salesAgentId: In(agents.map((agent) => agent.id)),
+        salesAgentId: In([...new Set(eligibleAgents.map((agent) => agent.id))]),
       },
     });
     await this.deliver(subscriptions, this.salesPayload(conversationId));

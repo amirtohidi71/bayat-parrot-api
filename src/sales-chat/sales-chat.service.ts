@@ -1,3 +1,4 @@
+import { allowedSalesChatAreas } from './sales-chat-area.policy';
 import {
   BadRequestException,
   ConflictException,
@@ -242,10 +243,10 @@ export class SalesChatService {
   }
 
   async listAgentQueue(agentId: string, scope: SalesAgentScope) {
-    await this.requireActiveAgent(agentId, scope);
+    const agent = await this.requireActiveAgent(agentId, scope);
     const items = await this.conversations.find({
       where: {
-        area: scope,
+        area: In(allowedSalesChatAreas(agent)),
         status: ChatConversationStatus.OPEN_UNASSIGNED,
         assignedAgentId: IsNull(),
       },
@@ -288,7 +289,7 @@ export class SalesChatService {
     scope: SalesAgentScope,
     conversationId: string,
   ) {
-    await this.requireActiveAgent(agentId, scope);
+    const agent = await this.requireActiveAgent(agentId, scope);
     const claimed = await this.dataSource.transaction(async (manager) => {
       const update = await manager
         .createQueryBuilder()
@@ -299,7 +300,9 @@ export class SalesChatService {
           agentLastReadSequence: 0,
         })
         .where('id = :conversationId', { conversationId })
-        .andWhere('area = :scope', { scope })
+        .andWhere('area IN (:...areas)', {
+          areas: allowedSalesChatAreas(agent),
+        })
         .andWhere('status = :status', {
           status: ChatConversationStatus.OPEN_UNASSIGNED,
         })
@@ -313,7 +316,7 @@ export class SalesChatService {
           select: { id: true, area: true, status: true, assignedAgentId: true },
         });
         if (!actual) throw new NotFoundException('Conversation not found');
-        if (actual.area !== scope) {
+        if (!allowedSalesChatAreas(agent).includes(actual.area)) {
           throw new ForbiddenException(
             'Conversation belongs to another sales area',
           );
@@ -358,9 +361,10 @@ export class SalesChatService {
     dto: SendChatMessageDto,
   ) {
     const text = this.validText(dto.text);
+    const agent = await this.requireActiveAgent(agentId, scope);
     const result = await this.dataSource.transaction(async (manager) => {
       const conversation = await this.lockConversation(manager, conversationId);
-      this.assertAssigned(conversation, agentId, scope);
+      this.assertAssigned(conversation, agent);
       if (conversation.status === ChatConversationStatus.CLOSED) {
         throw new ConflictException('Conversation is closed');
       }
@@ -404,9 +408,10 @@ export class SalesChatService {
     conversationId: string,
     dto: MarkChatReadDto,
   ) {
+    const agent = await this.requireActiveAgent(agentId, scope);
     const conversation = await this.dataSource.transaction(async (manager) => {
       const locked = await this.lockConversation(manager, conversationId);
-      this.assertAssigned(locked, agentId, scope);
+      this.assertAssigned(locked, agent);
       const target = Math.min(
         dto.sequence ?? locked.lastSequence,
         locked.lastSequence,
@@ -424,7 +429,7 @@ export class SalesChatService {
   }
 
   async getAgentUnreadCount(agentId: string, scope: SalesAgentScope) {
-    await this.requireActiveAgent(agentId, scope);
+    const agent = await this.requireActiveAgent(agentId, scope);
     const unreadCount = await this.messages
       .createQueryBuilder('message')
       .innerJoin(
@@ -433,7 +438,9 @@ export class SalesChatService {
         'conversation.id = message.conversationId',
       )
       .where('conversation.assignedAgentId = :agentId', { agentId })
-      .andWhere('conversation.area = :scope', { scope })
+      .andWhere('conversation.area IN (:...areas)', {
+        areas: allowedSalesChatAreas(agent),
+      })
       .andWhere('conversation.status = :status', {
         status: ChatConversationStatus.OPEN_ASSIGNED,
       })
@@ -450,9 +457,10 @@ export class SalesChatService {
     scope: SalesAgentScope,
     conversationId: string,
   ) {
+    const agent = await this.requireActiveAgent(agentId, scope);
     const conversation = await this.dataSource.transaction(async (manager) => {
       const locked = await this.lockConversation(manager, conversationId);
-      this.assertAssigned(locked, agentId, scope);
+      this.assertAssigned(locked, agent);
       if (locked.status !== ChatConversationStatus.CLOSED) {
         locked.status = ChatConversationStatus.CLOSED;
         locked.closedAt = new Date();
@@ -523,7 +531,7 @@ export class SalesChatService {
         where: { id: targetAgentId, active: true },
       });
       if (!target) throw new NotFoundException('Sales agent not found');
-      if (target.scope !== conversation.area) {
+      if (!allowedSalesChatAreas(target).includes(conversation.area)) {
         throw new BadRequestException(
           'Sales agent belongs to another sales area',
         );
@@ -734,30 +742,30 @@ export class SalesChatService {
     scope: SalesAgentScope,
     id: string,
   ) {
-    await this.requireActiveAgent(agentId, scope);
+    const agent = await this.requireActiveAgent(agentId, scope);
     const conversation = await this.conversations.findOne({ where: { id } });
     if (!conversation) throw new NotFoundException('Conversation not found');
-    this.assertAssigned(conversation, agentId, scope);
+    this.assertAssigned(conversation, agent);
     return conversation;
   }
 
   private async requireActiveAgent(agentId: string, scope: SalesAgentScope) {
     const agent = await this.agents.findOne({
       where: { id: agentId, scope, active: true },
-      select: { id: true },
+      select: { id: true, username: true, scope: true, active: true },
     });
     if (!agent)
       throw new ForbiddenException('Sales agent access is unavailable');
+    return agent;
   }
 
   private assertAssigned(
     conversation: ChatConversation,
-    agentId: string,
-    scope: SalesAgentScope,
+    agent: SalesAgent,
   ): void {
     if (
-      conversation.area !== scope ||
-      conversation.assignedAgentId !== agentId
+      !allowedSalesChatAreas(agent).includes(conversation.area) ||
+      conversation.assignedAgentId !== agent.id
     ) {
       throw new ForbiddenException(
         'Conversation is not assigned to this sales agent',
@@ -805,11 +813,13 @@ export class SalesChatService {
         where: {
           id: conversation.assignedAgentId,
           active: true,
-          scope: conversation.area,
         },
-        select: { id: true },
+        select: { id: true, username: true, scope: true, active: true },
       });
-      if (!assignedAgent) {
+      if (
+        !assignedAgent ||
+        !allowedSalesChatAreas(assignedAgent).includes(conversation.area)
+      ) {
         this.logger.warn(
           'Chat push skipped count=1 reason=assigned-agent-unavailable',
         );
