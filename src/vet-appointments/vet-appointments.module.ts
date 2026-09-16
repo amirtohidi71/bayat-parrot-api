@@ -14,6 +14,7 @@ import { VetAppointmentEvent } from './entities/appointment-event.entity';
 import { VetNotificationOutbox } from './entities/notification-outbox.entity';
 import { VetBookingPolicy } from './policies/vet-booking.policy';
 import { AdminModule } from '../admin/admin.module';
+import { UsersModule } from '../users/users.module';
 import { AdminVetAvailabilityController } from './admin-availability.controller';
 import { VetAvailabilityService } from './availability.service';
 import { CustomerVetBookingController } from './customer-booking.controller';
@@ -51,6 +52,7 @@ import { VetReminderWorker } from './vet-reminder.worker';
 import { AdminVetManualAvailabilityController } from './admin-manual-availability.controller';
 import { AdminVetDoctorsController } from './admin-vet-doctors.controller';
 import { VetDoctorDirectoryService } from './vet-doctor-directory.service';
+import { AdminVetCustomerDirectoryController } from './admin-vet-customer-directory.controller';
 
 export function selectVetVideoProvider(
   config: ConfigService,
@@ -85,6 +87,7 @@ export const VET_ENTITIES = [
   imports: [
     TypeOrmModule.forFeature(VET_ENTITIES),
     AdminModule,
+    UsersModule,
     SmsModule,
     JwtModule.register({}),
     ThrottlerModule.forRoot([
@@ -95,6 +98,7 @@ export const VET_ENTITIES = [
     AdminVetAvailabilityController,
     AdminVetManualAvailabilityController,
     AdminVetDoctorsController,
+    AdminVetCustomerDirectoryController,
     CustomerVetAvailabilityController,
     AdminVetManualAssignmentController,
     CustomerVetBookingController,
