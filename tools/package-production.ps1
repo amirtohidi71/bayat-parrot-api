@@ -106,6 +106,147 @@ function Get-CleanRepositoryCommit {
   return $commit.ToLowerInvariant()
 }
 
+function Get-FrontendLinuxSharpRuntimeSpec {
+  param([Parameter(Mandatory = $true)][string]$FrontendRoot)
+
+  $lockfilePath = Join-Path $FrontendRoot 'package-lock.json'
+  if (-not (Test-Path -LiteralPath $lockfilePath -PathType Leaf)) {
+    throw "Frontend package-lock.json does not exist: $lockfilePath"
+  }
+
+  $nodeCommand = (Get-Command node.exe -ErrorAction Stop).Source
+  $lockfileReader = @'
+const fs = require('fs');
+const lockfile = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const sharpName = 'sharp';
+const bindingName = '@img/sharp-linux-x64';
+const libvipsName = '@img/sharp-libvips-linux-x64';
+function getPackage(packagePath) {
+  const value = lockfile.packages && lockfile.packages[packagePath];
+  if (!value) throw new Error(`Required package is missing from the frontend lockfile: ${packagePath}`);
+  return value;
+}
+const sharp = getPackage('node_modules/sharp');
+const binding = getPackage('node_modules/@img/sharp-linux-x64');
+const libvips = getPackage('node_modules/@img/sharp-libvips-linux-x64');
+if (sharp.optionalDependencies?.[bindingName] !== binding.version ||
+    sharp.optionalDependencies?.[libvipsName] !== libvips.version ||
+    binding.optionalDependencies?.[libvipsName] !== libvips.version) {
+  throw new Error('Frontend lockfile contains an inconsistent Linux sharp dependency tree.');
+}
+for (const packageMetadata of [binding, libvips]) {
+  if (!packageMetadata.os?.includes('linux') || !packageMetadata.cpu?.includes('x64') ||
+      !packageMetadata.libc?.includes('glibc')) {
+    throw new Error('Frontend lockfile Linux sharp packages do not target linux/x64/glibc.');
+  }
+}
+process.stdout.write(JSON.stringify({
+  SharpName: sharpName,
+  SharpVersion: sharp.version,
+  BindingName: bindingName,
+  BindingVersion: binding.version,
+  LibvipsName: libvipsName,
+  LibvipsVersion: libvips.version
+}));
+'@
+  $runtimeSpecJson = & $nodeCommand -e $lockfileReader $lockfilePath
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($runtimeSpecJson)) {
+    throw 'Failed to resolve the Linux sharp runtime from the frontend lockfile.'
+  }
+
+  return $runtimeSpecJson | ConvertFrom-Json
+}
+
+function Install-FrontendLinuxSharpRuntime {
+  param(
+    [Parameter(Mandatory = $true)][string]$FrontendRoot,
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$StandaloneRoot,
+    [Parameter(Mandatory = $true)][object]$Spec
+  )
+
+  New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+  Copy-Item -LiteralPath (Join-Path $FrontendRoot 'package.json') -Destination $InstallRoot
+  Copy-Item -LiteralPath (Join-Path $FrontendRoot 'package-lock.json') -Destination $InstallRoot
+
+  $npmCommand = (Get-Command npm.cmd -ErrorAction Stop).Source
+  Push-Location -LiteralPath $InstallRoot
+  try {
+    & $npmCommand ci --omit=dev --include=optional --ignore-scripts --os=linux --cpu=x64 --libc=glibc --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) {
+      throw 'Failed to install the locked linux/x64/glibc frontend runtime dependencies.'
+    }
+  }
+  finally {
+    Pop-Location
+  }
+
+  $sourceNodeModules = Join-Path $InstallRoot 'node_modules'
+  $targetNodeModules = Join-Path $StandaloneRoot 'node_modules'
+  $targetImgRoot = Join-Path $targetNodeModules '@img'
+  New-Item -ItemType Directory -Path $targetImgRoot -Force | Out-Null
+
+  Copy-DirectoryContents -Source (Join-Path $sourceNodeModules $Spec.BindingName) -Destination (Join-Path $targetNodeModules $Spec.BindingName)
+  Copy-DirectoryContents -Source (Join-Path $sourceNodeModules $Spec.LibvipsName) -Destination (Join-Path $targetNodeModules $Spec.LibvipsName)
+
+  $allowedSharpRuntimeDirectories = @(
+    ($Spec.BindingName -split '/')[1],
+    ($Spec.LibvipsName -split '/')[1]
+  )
+  $foreignSharpRuntimeDirectories = @(Get-ChildItem -LiteralPath $targetImgRoot -Directory -Force | Where-Object {
+      $_.Name -like 'sharp-*' -and $_.Name -notin $allowedSharpRuntimeDirectories
+    })
+  foreach ($directory in $foreignSharpRuntimeDirectories) {
+    Remove-OwnedDirectory -Path $directory.FullName -Parent $targetImgRoot -ExpectedName $directory.Name
+  }
+}
+
+function Assert-FrontendLinuxSharpRuntime {
+  param(
+    [Parameter(Mandatory = $true)][string]$StandaloneRoot,
+    [Parameter(Mandatory = $true)][object]$Spec
+  )
+
+  $nodeModules = Join-Path $StandaloneRoot 'node_modules'
+  $expectedPackages = @(
+    [pscustomobject]@{ Name = $Spec.SharpName; Version = $Spec.SharpVersion },
+    [pscustomobject]@{ Name = $Spec.BindingName; Version = $Spec.BindingVersion },
+    [pscustomobject]@{ Name = $Spec.LibvipsName; Version = $Spec.LibvipsVersion }
+  )
+  foreach ($expectedPackage in $expectedPackages) {
+    $packageRoot = Join-Path $nodeModules $expectedPackage.Name
+    $packageJsonPath = Join-Path $packageRoot 'package.json'
+    if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
+      throw "Frontend artifact is missing Linux sharp runtime package: $($expectedPackage.Name)"
+    }
+    $package = Get-Content -LiteralPath $packageJsonPath -Raw -Encoding utf8 | ConvertFrom-Json
+    if ($package.name -ne $expectedPackage.Name -or $package.version -ne $expectedPackage.Version) {
+      throw "Frontend artifact has an unexpected version of $($expectedPackage.Name)."
+    }
+  }
+
+  $bindingRoot = Join-Path $nodeModules $Spec.BindingName
+  $libvipsRoot = Join-Path $nodeModules $Spec.LibvipsName
+  if (-not (Get-ChildItem -LiteralPath $bindingRoot -Recurse -File | Where-Object { $_.Name -like '*.node' })) {
+    throw 'Frontend artifact Linux sharp binding does not contain a native .node module.'
+  }
+  if (-not (Get-ChildItem -LiteralPath $libvipsRoot -Recurse -File | Where-Object { $_.Name -like 'libvips*.so*' })) {
+    throw 'Frontend artifact Linux sharp runtime does not contain a libvips shared library.'
+  }
+
+  $imgRoot = Join-Path $nodeModules '@img'
+  $allowedSharpRuntimeDirectories = @(
+    ($Spec.BindingName -split '/')[1],
+    ($Spec.LibvipsName -split '/')[1]
+  )
+  $foreignSharpRuntimeDirectories = @(Get-ChildItem -LiteralPath $imgRoot -Directory -Force | Where-Object {
+      $_.Name -like 'sharp-*' -and $_.Name -notin $allowedSharpRuntimeDirectories
+    })
+  if ($foreignSharpRuntimeDirectories.Count -gt 0) {
+    throw "Frontend artifact contains non-linux-x64 sharp runtimes: $($foreignSharpRuntimeDirectories.Name -join ', ')"
+  }
+}
+
 function Copy-DirectoryContents {
   param(
     [Parameter(Mandatory = $true)][string]$Source,
@@ -157,7 +298,7 @@ function Assert-ProtectedArtifact {
     })
 
   if ($forbidden.Count -gt 0) {
-    $paths = $forbidden | ForEach-Object { $_.FullName.Substring($Root.Length).TrimStart('\\', '/') }
+    $paths = $forbidden | ForEach-Object { $_.FullName.Substring($Root.Length).TrimStart([char[]]@('\', '/')) }
     throw "Forbidden artifact content detected:`n$($paths -join "`n")"
   }
 }
@@ -282,7 +423,7 @@ function Assert-NoArtifactSecrets {
 
   $files = @(Get-ChildItem -LiteralPath $Root -Recurse -Force -File)
   foreach ($file in $files) {
-    $relativePath = $file.FullName.Substring($Root.Length).TrimStart('\', '/')
+    $relativePath = $file.FullName.Substring($Root.Length).TrimStart([char[]]@('\', '/'))
     try {
       $isText = Test-ArtifactFileIsText -Path $file.FullName
     }
@@ -440,6 +581,8 @@ $publishRoot = Join-Path $outputPath $publishName
 $lockPath = Join-Path $tempRoot "bayat-parrot-package-$ReleaseId.lock"
 $backendStage = $null
 $frontendStage = $null
+$frontendLinuxRuntimeInstall = $null
+$frontendSharpRuntimeSpec = $null
 if ($includeBackend) {
   $backendStage = Join-Path $stagingRoot 'backend'
 }
@@ -451,6 +594,8 @@ $previousPublicApiUrl = $null
 if ($includeFrontend) {
   $frontendPathResolved = (Resolve-Path -LiteralPath $FrontendPath).Path
   $frontendStage = Join-Path $stagingRoot 'frontend'
+  $frontendLinuxRuntimeInstall = Join-Path $stagingRoot 'frontend-linux-runtime'
+  $frontendSharpRuntimeSpec = Get-FrontendLinuxSharpRuntimeSpec -FrontendRoot $frontendPathResolved
   $previousPublicApiUrl = $env:NEXT_PUBLIC_API_URL
 
   $apiUri = $null
@@ -553,6 +698,7 @@ try {
     Copy-DirectoryContents -Source (Join-Path $frontendPathResolved '.next/standalone') -Destination $standaloneTarget
     Copy-DirectoryContents -Source (Join-Path $frontendPathResolved '.next/static') -Destination (Join-Path $standaloneTarget '.next/static')
     Copy-DirectoryContents -Source (Join-Path $frontendPathResolved 'public') -Destination (Join-Path $standaloneTarget 'public')
+    Install-FrontendLinuxSharpRuntime -FrontendRoot $frontendPathResolved -InstallRoot $frontendLinuxRuntimeInstall -StandaloneRoot $standaloneTarget -Spec $frontendSharpRuntimeSpec
   }
 
   if ($includeBackend) {
@@ -564,6 +710,7 @@ try {
     Assert-ProtectedArtifact -Root $frontendStage
     Assert-NoArtifactSecrets -Root $frontendStage
     Assert-FrontendArtifactLayout -Root $frontendStage
+    Assert-FrontendLinuxSharpRuntime -StandaloneRoot (Join-Path $frontendStage '.next/standalone') -Spec $frontendSharpRuntimeSpec
   }
 
   New-Item -ItemType Directory -Path $publishRoot | Out-Null

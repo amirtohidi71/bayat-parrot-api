@@ -22,6 +22,17 @@ Only the following may remain on the final customer server:
 - customer uploads
 - the customer database
 
+## Frontend native-runtime preflight
+
+Frontend artifacts are built on Windows for an Ubuntu Linux x64/glibc production target. Packaging must derive the exact `sharp`, `@img/sharp-linux-x64`, and `@img/sharp-libvips-linux-x64` versions from the frontend lockfile, install them for the target platform in an isolated temporary directory, and reject the artifact before archiving if any required package or native library is absent. Production must not be repaired by installing dependencies manually on the server.
+
+Before switching `current`, run the following checks from the extracted frontend standalone directory on Ubuntu:
+
+1. Execute `node -e "const sharp=require('sharp'); sharp({create:{width:2,height:2,channels:3,background:'white'}}).resize(1,1).png().toBuffer().then(()=>console.log(sharp.versions)).catch(error=>{console.error(error);process.exit(1)})"`. It must load the Linux binding and complete an actual transform.
+2. Start the candidate frontend with its normal production environment and request a known remote upload through `/_next/image` with `w=128` and an explicit quality.
+3. Save the original and optimized responses temporarily, then compare both byte length and dimensions. The optimized response must be 128 pixels on its constrained axis and must be smaller than the original. A 200 response that has the original dimensions or byte length fails preflight.
+4. Stop the candidate process and remove the temporary response files. Only after these checks and the normal health check pass may the release symlinks be changed.
+
 If GitHub access is used during temporary setup, all associated keys, credentials, tokens, configuration, and repository access must be removed before customer handoff.
 
 ## License behavior
