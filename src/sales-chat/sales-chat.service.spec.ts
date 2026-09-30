@@ -33,7 +33,12 @@ describe('SalesChatService security boundaries', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    agents.findOne.mockResolvedValue({ id: 'agent-1' });
+    agents.findOne.mockResolvedValue({
+      id: 'agent-1',
+      username: 'agent-1',
+      scope: SalesAgentScope.PARROT,
+      active: true,
+    });
     push.notifyAreaAgents.mockResolvedValue(undefined);
     push.notifyAssignedAgent.mockResolvedValue(undefined);
     push.notifyCustomer.mockResolvedValue(undefined);
@@ -201,9 +206,8 @@ describe('SalesChatService security boundaries', () => {
       where: {
         id: 'inactive-agent-id',
         active: true,
-        scope: SalesAgentScope.PARROT,
       },
-      select: { id: true },
+      select: { id: true, username: true, scope: true, active: true },
     });
     expect(push.notifyAssignedAgent).not.toHaveBeenCalled();
     expect(push.notifyAreaAgents).not.toHaveBeenCalled();
@@ -256,7 +260,12 @@ describe('SalesChatService security boundaries', () => {
   });
 
   it('keeps the unassigned queue summary free of customer and message text', async () => {
-    agents.findOne.mockResolvedValue({ id: 'agent-1' });
+    agents.findOne.mockResolvedValue({
+      id: 'agent-1',
+      username: 'agent-1',
+      scope: SalesAgentScope.PARROT,
+      active: true,
+    });
     conversations.find.mockResolvedValue([
       {
         id: 'conversation-1',

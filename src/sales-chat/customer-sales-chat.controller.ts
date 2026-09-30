@@ -13,6 +13,7 @@ import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CustomerCapabilityGuard } from '../auth/guards/customer-capability.guard';
 import { ChatPushService } from './chat-push.service';
 import { ChatMessagesQueryDto } from './dto/chat-messages-query.dto';
 import {
@@ -28,7 +29,7 @@ import { SalesChatService } from './sales-chat.service';
 const uuidV4Pipe = new ParseUUIDPipe({ version: '4' });
 
 @Controller('sales-chat/customer')
-@UseGuards(JwtAuthGuard, SalesChatThrottlerGuard)
+@UseGuards(JwtAuthGuard, CustomerCapabilityGuard, SalesChatThrottlerGuard)
 @Throttle({ default: { limit: 240, ttl: 15 * 60 * 1000 } })
 export class CustomerSalesChatController {
   constructor(

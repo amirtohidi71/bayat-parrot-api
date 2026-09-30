@@ -17,7 +17,7 @@ import {
   BirdPassport,
   BirdPassportStatus,
 } from '../bird-passports/entities/bird-passport.entity';
-import { User, UserRole } from '../users/entities/user.entity';
+import { User, isCustomerRole } from '../users/entities/user.entity';
 import { VetAppointmentEvent } from './entities/appointment-event.entity';
 import { VetAppointmentSlot } from './entities/appointment-slot.entity';
 import { VetAppointment } from './entities/appointment.entity';
@@ -139,7 +139,7 @@ export class VetPaidHoldService {
           lock: { mode: 'pessimistic_read' },
         });
         if (!user) throw new NotFoundException('Customer not found');
-        if (user.role !== UserRole.CUSTOMER)
+        if (!isCustomerRole(user.role))
           throw new ForbiddenException('Customer access required');
         const ownerFullName = this.customerProfile(user);
 

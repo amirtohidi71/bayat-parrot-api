@@ -58,6 +58,7 @@ describe('Vet appointment dashboard HTTP', () => {
           useValue: new ConfigService({
             JWT_SECRET: secret,
             VET_DOCTOR_JWT_SECRET: doctorSecret,
+            ADMIN_USERS: 'admin',
           }),
         },
       ],

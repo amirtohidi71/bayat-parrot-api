@@ -16,6 +16,7 @@ import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { CompleteRegistrationDto } from './dto/complete-registration.dto';
 import { SmsService } from '../common/sms/sms.service';
 import { SmsError } from '../common/sms/sms.types';
+import { User } from '../users/entities/user.entity';
 
 const OTP_LENGTH = 5;
 const OTP_EXPIRY_SECONDS = 120;
@@ -24,7 +25,10 @@ const MAX_OTP_ATTEMPTS = 5;
 
 type VerifyOtpOutcome =
   | { valid: false }
-  | { valid: true; phone: string };
+  | {
+      valid: true;
+      user: Pick<User, 'id' | 'phone' | 'role' | 'profileCompleted'>;
+    };
 
 @Injectable()
 export class AuthService {
@@ -45,14 +49,18 @@ export class AuthService {
 
     try {
       await this.dataSource.transaction(async (manager) => {
-        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`auth-otp:${phone}`]);
+        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `auth-otp:${phone}`,
+        ]);
         const otpRepository = manager.getRepository(Otp);
         const latestOtp = await otpRepository.findOne({
           where: { phone },
           order: { createdAt: 'DESC' },
           lock: { mode: 'pessimistic_write' },
         });
-        const cooldownStartedAt = new Date(Date.now() - OTP_COOLDOWN_SECONDS * 1000);
+        const cooldownStartedAt = new Date(
+          Date.now() - OTP_COOLDOWN_SECONDS * 1000,
+        );
         if (latestOtp && latestOtp.createdAt > cooldownStartedAt) {
           throw new HttpException(
             'Please wait before requesting another OTP',
@@ -70,7 +78,9 @@ export class AuthService {
       });
     } catch (error) {
       if (error instanceof SmsError) {
-        throw new ServiceUnavailableException('Unable to send verification code');
+        throw new ServiceUnavailableException(
+          'Unable to send verification code',
+        );
       }
       throw error;
     }
@@ -79,60 +89,71 @@ export class AuthService {
   }
 
   async verifyOtp({ phone, code }: VerifyOtpDto) {
-    const outcome = await this.dataSource.transaction<VerifyOtpOutcome>(async (manager) => {
-      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`auth-otp:${phone}`]);
-      const otpRepository = manager.getRepository(Otp);
-      const otp = await otpRepository.findOne({
-        where: { phone, consumed: false },
-        order: { createdAt: 'DESC' },
-        lock: { mode: 'pessimistic_write' },
-      });
+    const outcome = await this.dataSource.transaction<VerifyOtpOutcome>(
+      async (manager) => {
+        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `auth-otp:${phone}`,
+        ]);
+        const otpRepository = manager.getRepository(Otp);
+        const otp = await otpRepository.findOne({
+          where: { phone, consumed: false },
+          order: { createdAt: 'DESC' },
+          lock: { mode: 'pessimistic_write' },
+        });
 
-      if (!otp) {
-        return { valid: false };
-      }
-      if (otp.expiresAt < new Date()) {
+        if (!otp) {
+          return { valid: false };
+        }
+        if (otp.expiresAt < new Date()) {
+          otp.consumed = true;
+          await otpRepository.save(otp);
+          return { valid: false };
+        }
+
+        const codeMatches = await bcrypt.compare(code, otp.codeHash);
+        if (!codeMatches) {
+          otp.attempts += 1;
+          if (otp.attempts >= MAX_OTP_ATTEMPTS) {
+            otp.consumed = true;
+          }
+          await otpRepository.save(otp);
+          return { valid: false };
+        }
+
         otp.consumed = true;
         await otpRepository.save(otp);
-        return { valid: false };
-      }
 
-      const codeMatches = await bcrypt.compare(code, otp.codeHash);
-      if (!codeMatches) {
-        otp.attempts += 1;
-        if (otp.attempts >= MAX_OTP_ATTEMPTS) {
-          otp.consumed = true;
-        }
-        await otpRepository.save(otp);
-        return { valid: false };
-      }
+        const users = manager.getRepository(User);
+        let user = await users.findOne({
+          where: { phone: otp.phone },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!user) user = users.create({ phone: otp.phone });
+        user.phoneVerifiedAt = new Date();
+        const verifiedUser = await users.save(user);
 
-      otp.consumed = true;
-      await otpRepository.save(otp);
-      return { valid: true, phone: otp.phone };
-    });
+        return { valid: true, user: verifiedUser };
+      },
+    );
 
     if (!outcome.valid) {
       throw new UnauthorizedException('OTP code is invalid or expired');
     }
 
-    const existingUser = await this.usersService.findByPhone(outcome.phone);
-    if (existingUser?.profileCompleted) {
-      return {
-        ...this.buildToken(existingUser.id, existingUser.phone, existingUser.role),
-        profileCompleted: true,
-      };
-    }
-
-    const user = existingUser ?? (await this.usersService.createWithPhone(outcome.phone));
-
     return {
-      ...this.buildToken(user.id, user.phone, user.role),
-      profileCompleted: user.profileCompleted,
+      ...this.buildToken(
+        outcome.user.id,
+        outcome.user.phone,
+        outcome.user.role,
+      ),
+      profileCompleted: outcome.user.profileCompleted,
     };
   }
 
-  async register(userId: string, completeRegistrationDto: CompleteRegistrationDto) {
+  async register(
+    userId: string,
+    completeRegistrationDto: CompleteRegistrationDto,
+  ) {
     const { firstName, lastName } = completeRegistrationDto;
     return this.usersService.completeRegistration(userId, firstName, lastName);
   }

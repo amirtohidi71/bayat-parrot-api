@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ValidationPipe,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -51,6 +52,10 @@ describe('Admin vet availability HTTP with existing JWT guard', () => {
       ],
       providers: [
         AdminAuthGuard,
+        {
+          provide: ConfigService,
+          useValue: new ConfigService({ ADMIN_USERS: 'test-admin' }),
+        },
         { provide: VetAvailabilityService, useValue: service },
       ],
     }).compile();

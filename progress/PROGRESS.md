@@ -1,6 +1,6 @@
 # بک‌اند بیات پروت — وضعیت پروژه
 
-آخرین به‌روزرسانی: 2026-07-05
+آخرین به‌روزرسانی: 2026-09-30
 
 ## تکنولوژی‌ها
 
@@ -18,7 +18,7 @@
 
 - PostgreSQL، نام دیتابیس: `bayat_parrot`
 - اتصال از طریق متغیرهای `.env` (`DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME`)
-- در حالت توسعه `synchronize: true` فعال است (schema به‌صورت خودکار از روی entity ها ساخته/آپدیت می‌شود) — **قبل از پروداکشن باید به migration واقعی تبدیل شود.**
+- برای Migration و Deploy فاز Seller Onboarding، مقدار `DB_SYNCHRONIZE` باید پیش از اجرا صریحاً `false` باشد؛ Migration این فاز هنوز روی محیط اصلی اعمال نشده است.
 - جدول‌های فعلی: `users`, `otps`, `categories`, `products`, `orders`, `order_items`
 - `products` فیلدهای زیاد و چند enum دارد (`status`, `categorySlug`, `gender`, `ageStage`) — همه‌ی ستون‌های جدید/الزامی (`sku`, `categorySlug`, ...) در سطح DB nullable نگه داشته شدند تا `synchronize` روی رکوردهای قبلی کرش نکند؛ الزامی بودن‌شان فقط در DTO (سطح اعتبارسنجی) اعمال می‌شود. مشخصات فنی محصول در فیلد `specifications` از نوع `jsonb` ذخیره می‌شود: آرایه‌ای از `{ label, value }` که برای همه دسته‌ها عمومی است.
 - `orders.orderNumber` (unique، nullable در DB به همان دلیل بالا) فرمت `BP-YYYYMMDDXXXX` بر اساس تاریخ شمسی دارد (مثال: `BP-140504070001`، بدون خط‌فاصله بین تاریخ و شمارنده)؛ شمارنده‌ی ۴ رقمی هر روز از `0001` شروع می‌شود. تولید آن در `OrdersService.saveOrderWithOrderNumber` با شمارش سفارش‌های همان روز + retry روی خطای unique-violation (کد پستگرس `23505`) انجام می‌شود تا زیر بار همزمان هم شماره‌ی تکراری ساخته نشود. سفارش‌های قدیمی‌تر از این فیچر مقدار `orderNumber = null` دارند.
@@ -94,6 +94,16 @@ Order entity فیلدهای جدید: `postalCode` (الزامی در DTO ثبت
 | DELETE | `/admin-panel/products/:id` | حذف محصول |
 | POST | `/admin-panel/products/:id/images` | آپلود تصویر محصول (multipart، فیلد `image`)؛ حداکثر ۵مگابایت، فرمت‌های `jpg/jpeg/png/webp` |
 
+### Seller Onboarding — فاز اول بک‌اند
+
+- نقش `BREEDER` به نقش‌های کاربر افزوده شده است. این نقش قابلیت‌های عمومی `CUSTOMER` را حفظ می‌کند و هیچ دسترسی Admin یا God Admin ندارد.
+- جریان‌های `Seller Verification` و `Breeder Application` با DTOهای محدود، پاسخ‌های allowlist‌شده، state transitionهای کنترل‌شده و transaction/row lock پیاده‌سازی شده‌اند. تغییر نقش به `BREEDER` فقط هنگام تأیید معتبر درخواست پرورش‌دهنده و داخل transaction انجام می‌شود.
+- مسیرهای کاربر زیر `/seller-onboarding/...` و مسیرهای بررسی ادمین فقط زیر `/admin-panel/seller-onboarding/...` قرار دارند.
+- پنج ادمین عادی مجاز این جریان `pahlevan`، `bayat`، `shoaei`، `shayan` و `ahmadi` هستند و باید از registry محیطی `ADMIN_USERS` احراز شوند. God Admin/Owner به Seller Onboarding دسترسی ندارد و اختیار انتشار Product همچنان جدا و فقط متعلق به Owner است.
+- پیش از Deploy، `shayan` و `ahmadi` باید در `ADMIN_USERS` و متغیرهای امن پسورد متناظر در Environment مقصد، خارج از Git، تنظیم شوند. هیچ credential در Repository نگه‌داری نمی‌شود.
+- Migrationهای Seller Onboarding آماده و با PostgreSQL disposable محلی اعتبارسنجی شده‌اند، اما هنوز روی دیتابیس اصلی یا Production اعمال نشده‌اند. پیش از Migration و Deploy، `DB_SYNCHRONIZE=false` الزامی است.
+- Frontend این قابلیت هنوز پیاده‌سازی نشده است. وضعیت اعتبارسنجی بک‌اند: **READY TO COMMIT**.
+
 ### آپلود و سرو تصویر محصول
 - آپلود با `@nestjs/platform-express` (`FileInterceptor`) + `multer` (`diskStorage`)، تنظیمات در `src/admin/config/product-image-upload.config.ts`.
 - فایل‌ها در `public/uploads/` با نام `${uuid}${پسوند}` ذخیره می‌شوند؛ آدرس (`/uploads/<filename>`) به آرایه‌ی `images` محصول در دیتابیس اضافه می‌شود.
@@ -115,7 +125,7 @@ Order entity فیلدهای جدید: `postalCode` (الزامی در DTO ثبت
 
 - **SMS واقعی:** `SmsService` (`src/common/sms/sms.service.ts`) فعلاً فقط لاگ می‌کند؛ باید به یک provider واقعی (مثل Kavenegar یا sms.ir) وصل شود — هم برای OTP و هم برای تایید سفارش.
 - **اتصال به فرانت:** فرانت به این بک‌اند وصل شده و در محیط توسعه محلی کار می‌کند؛ دیپلوی روی هاست ابری (آروان‌کلود) هنوز انجام نشده.
-- **Migration واقعی TypeORM:** الان `synchronize: true` است؛ قبل از پروداکشن باید migration نوشته و سوییچ شود.
+- **Seller Onboarding:** Migration آماده است اما هنوز اعمال نشده و Frontend نیز پیاده‌سازی نشده است؛ اجرای Migration/Deploy فقط با `DB_SYNCHRONIZE=false` مجاز است.
 - **تست خودکار:** اسکلت Jest وجود دارد ولی برای فیچرهای جدید (auth/orders/admin/products) تستی نوشته نشده.
 - **Rate limiting روی OTP:** الان محدودیتی روی تعداد درخواست send-otp برای یک شماره وجود ندارد.
 - **Pagination روی `/users` و `/admin-panel/orders`:** فعلاً همه رکوردها بدون صفحه‌بندی برمی‌گردند.

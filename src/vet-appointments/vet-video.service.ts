@@ -18,7 +18,7 @@ import {
   QueryFailedError,
   Repository,
 } from 'typeorm';
-import { User, UserRole } from '../users/entities/user.entity';
+import { User, isCustomerRole } from '../users/entities/user.entity';
 import { VetVideoRoomResponseDto } from './dto/video-room-response.dto';
 import { VetAppointmentSlot } from './entities/appointment-slot.entity';
 import { VetAppointment } from './entities/appointment.entity';
@@ -322,7 +322,7 @@ export class VetVideoService {
         where: { id: participant.id },
         lock: { mode: 'pessimistic_read' },
       });
-      if (!user || user.role !== UserRole.CUSTOMER)
+      if (!user || !isCustomerRole(user.role))
         throw new ForbiddenException('Customer access required');
       return;
     }

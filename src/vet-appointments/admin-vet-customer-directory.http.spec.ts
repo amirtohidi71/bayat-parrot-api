@@ -10,6 +10,16 @@ import { UserRole } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { AdminVetCustomerDirectoryController } from './admin-vet-customer-directory.controller';
 
+interface CustomerDirectoryResponseBody {
+  id: string;
+  phone: string;
+  firstName: string | null;
+  lastName: string | null;
+  email: string | null;
+  profileCompleted: boolean;
+  role: UserRole;
+}
+
 describe('Admin vet customer directory HTTP', () => {
   let app: INestApplication;
   let server: Server;
@@ -29,7 +39,10 @@ describe('Admin vet customer directory HTTP', () => {
         },
         {
           provide: ConfigService,
-          useValue: new ConfigService({ JWT_SECRET: secret }),
+          useValue: new ConfigService({
+            JWT_SECRET: secret,
+            ADMIN_USERS: 'test-admin',
+          }),
         },
       ],
     }).compile();
@@ -71,13 +84,15 @@ describe('Admin vet customer directory HTTP', () => {
       .set('Authorization', authorization())
       .expect(200);
 
-    expect(response.body).toEqual([
+    const body = response.body as CustomerDirectoryResponseBody[];
+
+    expect(body).toEqual([
       expect.objectContaining({
         phone: '09120000000',
         role: UserRole.CUSTOMER,
       }),
     ]);
-    expect(Object.keys(response.body[0]).sort()).toEqual([
+    expect(Object.keys(body[0]).sort()).toEqual([
       'email',
       'firstName',
       'id',

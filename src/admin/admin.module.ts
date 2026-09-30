@@ -11,6 +11,7 @@ import { User } from '../users/entities/user.entity';
 import { GodAdminController } from './god-admin.controller';
 import { GodAdminService } from './god-admin.service';
 import { GodAdminAuthGuard } from './guards/god-admin-auth.guard';
+import { assertAdminAuthConfiguration } from './admin-auth.config';
 
 @Module({
   imports: [
@@ -19,9 +20,12 @@ import { GodAdminAuthGuard } from './guards/god-admin-auth.guard';
     TypeOrmModule.forFeature([User]),
     JwtModule.registerAsync({
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET'),
-      }),
+      useFactory: (configService: ConfigService) => {
+        assertAdminAuthConfiguration(configService);
+        return {
+          secret: configService.get<string>('JWT_SECRET'),
+        };
+      },
     }),
   ],
   providers: [AdminService, AdminAuthGuard, GodAdminService, GodAdminAuthGuard],

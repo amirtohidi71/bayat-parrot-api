@@ -13,6 +13,7 @@ import { BirdPassportsModule } from './bird-passports/bird-passports.module';
 import { SalesChatModule } from './sales-chat/sales-chat.module';
 import { VetAppointmentsModule } from './vet-appointments/vet-appointments.module';
 import { resolveDatabaseSynchronize } from './config/database-synchronize';
+import { SellerOnboardingModule } from './seller-onboarding/seller-onboarding.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { resolveDatabaseSynchronize } from './config/database-synchronize';
     BirdPassportsModule,
     SalesChatModule,
     VetAppointmentsModule,
+    SellerOnboardingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

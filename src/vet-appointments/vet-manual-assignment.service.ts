@@ -17,7 +17,7 @@ import {
   BirdPassport,
   BirdPassportStatus,
 } from '../bird-passports/entities/bird-passport.entity';
-import { User, UserRole } from '../users/entities/user.entity';
+import { User, isCustomerRole } from '../users/entities/user.entity';
 import { AdminManualVetAssignmentDto } from './dto/admin-manual-assignment.dto';
 import { AdminManualVetAssignmentResponseDto } from './dto/admin-manual-assignment-response.dto';
 import { VetAppointmentEvent } from './entities/appointment-event.entity';
@@ -126,7 +126,7 @@ export class VetManualAssignmentService {
       lock: { mode: 'pessimistic_read' },
     });
     if (!customer) throw new NotFoundException('Customer not found');
-    if (customer.role !== UserRole.CUSTOMER)
+    if (!isCustomerRole(customer.role))
       throw new ConflictException('Selected user is not a customer');
     const ownerFullName = this.customerProfile(customer);
 

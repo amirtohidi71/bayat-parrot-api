@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { User } from './entities/user.entity';
 import { UserRole } from './entities/user.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -18,7 +18,7 @@ export class UsersService {
 
   findCustomersForAdminVetAssignment() {
     return this.usersRepository.find({
-      where: { role: UserRole.CUSTOMER },
+      where: { role: In([UserRole.CUSTOMER, UserRole.BREEDER]) },
       select: {
         id: true,
         phone: true,

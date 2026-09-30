@@ -6,6 +6,7 @@ import {
   NotFoundException,
   ValidationPipe,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import {
@@ -145,6 +146,10 @@ describe('Product Review Videos HTTP contract', () => {
       controllers: [AdminController, ProductsController],
       providers: [
         AdminAuthGuard,
+        {
+          provide: ConfigService,
+          useValue: new ConfigService({ ADMIN_USERS: 'editor' }),
+        },
         ProductReviewVideoUploadInterceptor,
         { provide: AdminService, useValue: {} },
         { provide: ProductsService, useValue: {} },

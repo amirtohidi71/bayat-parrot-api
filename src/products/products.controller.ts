@@ -16,6 +16,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator';
 import { ProductReviewVideosService } from './product-review-videos.service';
+import { CustomerCapabilityGuard } from '../auth/guards/customer-capability.guard';
 
 @Controller('products')
 export class ProductsController {
@@ -35,13 +36,17 @@ export class ProductsController {
   }
 
   @Post(':productId/reviews')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, CustomerCapabilityGuard)
   submitReview(
     @Param('productId') productId: string,
     @CurrentUser() user: AuthenticatedUser,
     @Body() createReviewDto: CreateProductReviewDto,
   ) {
-    return this.productsService.submitReview(productId, user.id, createReviewDto);
+    return this.productsService.submitReview(
+      productId,
+      user.id,
+      createReviewDto,
+    );
   }
 
   @Get(':productId/reviews')

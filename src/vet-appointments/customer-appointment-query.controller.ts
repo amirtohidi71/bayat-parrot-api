@@ -10,6 +10,7 @@ import {
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { isCustomerRole } from '../users/entities/user.entity';
 import { ListVetAppointmentsDto } from './dto/appointment-query.dto';
 import { VetAppointmentQueryService } from './vet-appointment-query.service';
 
@@ -37,7 +38,7 @@ export class CustomerVetAppointmentQueryController {
   }
 
   private assertCustomer(user: AuthenticatedUser) {
-    if (user.role !== 'customer')
+    if (!isCustomerRole(user.role))
       throw new ForbiddenException('Customer access required');
   }
 }

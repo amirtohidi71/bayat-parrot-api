@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import { UserRole } from '../../users/entities/user.entity';
 
 export interface JwtPayload {
   sub: string;
@@ -25,7 +26,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       payload.scope ||
       !payload.sub ||
       !/^09\d{9}$/.test(payload.phone) ||
-      !['customer', 'admin'].includes(payload.role)
+      !Object.values(UserRole).includes(payload.role as UserRole)
     ) {
       throw new UnauthorizedException('Invalid user token');
     }

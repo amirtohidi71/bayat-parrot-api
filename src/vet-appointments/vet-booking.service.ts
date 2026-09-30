@@ -17,7 +17,7 @@ import {
   BirdPassport,
   BirdPassportStatus,
 } from '../bird-passports/entities/bird-passport.entity';
-import { User, UserRole } from '../users/entities/user.entity';
+import { User, isCustomerRole } from '../users/entities/user.entity';
 import { BookVetAppointmentDto } from './dto/booking-request.dto';
 import { VetBookingResponseDto } from './dto/booking-response.dto';
 import { VetAppointmentEvent } from './entities/appointment-event.entity';
@@ -123,7 +123,7 @@ export class VetBookingService {
       where: { id: customerUserId },
     });
     if (!initialUser) throw new NotFoundException('Customer not found');
-    if (initialUser.role !== UserRole.CUSTOMER)
+    if (!isCustomerRole(initialUser.role))
       throw new ForbiddenException('Customer access required');
     this.customerProfile(initialUser);
 
@@ -195,7 +195,7 @@ export class VetBookingService {
       lock: { mode: 'pessimistic_read' },
     });
     if (!user) throw new NotFoundException('Customer not found');
-    if (user.role !== UserRole.CUSTOMER)
+    if (!isCustomerRole(user.role))
       throw new ForbiddenException('Customer access required');
     const ownerFullName = this.customerProfile(user);
 

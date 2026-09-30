@@ -10,6 +10,7 @@ import {
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { isCustomerRole } from '../users/entities/user.entity';
 import type { VetDoctorTokenPayload } from './guards/vet-doctor-auth.guard';
 import { VetDoctorAuthGuard } from './guards/vet-doctor-auth.guard';
 import { VetVideoService } from './vet-video.service';
@@ -24,7 +25,7 @@ export class CustomerVetVideoController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('appointmentId', new ParseUUIDPipe()) appointmentId: string,
   ) {
-    if (user.role !== 'customer')
+    if (!isCustomerRole(user.role))
       throw new ForbiddenException('Customer access required');
     return this.video.joinCustomer(appointmentId, user.id);
   }

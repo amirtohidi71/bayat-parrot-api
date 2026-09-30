@@ -11,6 +11,7 @@ import {
   PATH_METADATA,
 } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import {
@@ -166,7 +167,10 @@ describe('AdminBirdPassportsController', () => {
         return verification;
       }),
     };
-    const guard = new AdminAuthGuard(jwt as never);
+    const guard = new AdminAuthGuard(
+      jwt as never,
+      new ConfigService({ ADMIN_USERS: 'editor' }),
+    );
     const request = { headers: { authorization } };
     const execution = { switchToHttp: () => ({ getRequest: () => request }) };
     expect(() => guard.canActivate(execution as never)).toThrow(
@@ -178,7 +182,10 @@ describe('AdminBirdPassportsController', () => {
     const jwt = {
       verify: jest.fn(() => ({ scope: ADMIN_PANEL_SCOPE, username: 'editor' })),
     };
-    const guard = new AdminAuthGuard(jwt as never);
+    const guard = new AdminAuthGuard(
+      jwt as never,
+      new ConfigService({ ADMIN_USERS: 'editor' }),
+    );
     const request: { headers: { authorization: string }; admin?: unknown } = {
       headers: { authorization: 'Bearer admin' },
     };
@@ -393,6 +400,10 @@ describe('AdminBirdPassportsController HTTP validation', () => {
           useValue: httpContext.taxonomy,
         },
         AdminAuthGuard,
+        {
+          provide: ConfigService,
+          useValue: new ConfigService({ ADMIN_USERS: 'test-admin' }),
+        },
         AdminBirdPassportNoStoreInterceptor,
       ],
     }).compile();

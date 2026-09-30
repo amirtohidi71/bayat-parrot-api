@@ -8,6 +8,7 @@ import {
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { isCustomerRole } from '../users/entities/user.entity';
 import { VetAvailabilityService } from './availability.service';
 import { ListBookableVetSlotsDto } from './dto/customer-availability.dto';
 
@@ -21,7 +22,7 @@ export class CustomerVetAvailabilityController {
     @CurrentUser() user: AuthenticatedUser,
     @Query() query: ListBookableVetSlotsDto,
   ) {
-    if (user.role !== 'customer')
+    if (!isCustomerRole(user.role))
       throw new ForbiddenException('Customer access required');
     return this.availability.bookableSlots(query);
   }

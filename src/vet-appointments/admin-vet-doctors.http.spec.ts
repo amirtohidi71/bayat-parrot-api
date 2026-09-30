@@ -1,4 +1,5 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -40,6 +41,10 @@ describe('Admin vet doctor management HTTP', () => {
       controllers: [AdminVetDoctorsController],
       providers: [
         AdminAuthGuard,
+        {
+          provide: ConfigService,
+          useValue: new ConfigService({ ADMIN_USERS: 'test-admin' }),
+        },
         { provide: VetDoctorDirectoryService, useValue: doctors },
       ],
     }).compile();

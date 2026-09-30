@@ -26,6 +26,12 @@ function reviewVideoService() {
 }
 
 describe('product review video controller boundaries', () => {
+  const adminConfig = {
+    get: jest.fn((key: string) =>
+      key === 'ADMIN_USERS' ? 'admin' : undefined,
+    ),
+  };
+
   it.each([
     'getProductReviewVideos',
     'createProductReviewVideo',
@@ -41,9 +47,12 @@ describe('product review video controller boundaries', () => {
   });
 
   it('rejects a normal user token at the existing admin guard boundary', () => {
-    const guard = new AdminAuthGuard({
-      verify: jest.fn().mockReturnValue({ sub: 'user-id', role: 'customer' }),
-    } as never);
+    const guard = new AdminAuthGuard(
+      {
+        verify: jest.fn().mockReturnValue({ sub: 'user-id', role: 'customer' }),
+      } as never,
+      adminConfig as never,
+    );
     const request = { headers: { authorization: 'Bearer normal-user-token' } };
     const context = {
       switchToHttp: () => ({ getRequest: () => request }),
@@ -55,12 +64,15 @@ describe('product review video controller boundaries', () => {
   });
 
   it('accepts only an admin-panel scoped token', () => {
-    const guard = new AdminAuthGuard({
-      verify: jest.fn().mockReturnValue({
-        scope: ADMIN_PANEL_SCOPE,
-        username: 'admin',
-      }),
-    } as never);
+    const guard = new AdminAuthGuard(
+      {
+        verify: jest.fn().mockReturnValue({
+          scope: ADMIN_PANEL_SCOPE,
+          username: 'admin',
+        }),
+      } as never,
+      adminConfig as never,
+    );
     const request: { headers: { authorization: string }; admin?: unknown } = {
       headers: { authorization: 'Bearer admin-token' },
     };

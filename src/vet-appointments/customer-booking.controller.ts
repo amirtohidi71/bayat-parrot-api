@@ -8,6 +8,7 @@ import {
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { isCustomerRole } from '../users/entities/user.entity';
 import { BookVetAppointmentDto } from './dto/booking-request.dto';
 import { VetBookingService } from './vet-booking.service';
 
@@ -21,7 +22,7 @@ export class CustomerVetBookingController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() input: BookVetAppointmentDto,
   ) {
-    if (user.role !== 'customer')
+    if (!isCustomerRole(user.role))
       throw new ForbiddenException('Customer access required');
     return this.booking.book(user.id, input);
   }

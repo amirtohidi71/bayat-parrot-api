@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -8,6 +16,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from '../users/entities/user.entity';
+import { CustomerCapabilityGuard } from '../auth/guards/customer-capability.guard';
 
 @Controller('orders')
 @UseGuards(JwtAuthGuard)
@@ -15,16 +24,22 @@ export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @Post()
-  create(@CurrentUser() user: AuthenticatedUser, @Body() createOrderDto: CreateOrderDto) {
+  @UseGuards(CustomerCapabilityGuard)
+  create(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() createOrderDto: CreateOrderDto,
+  ) {
     return this.ordersService.create(user.id, user.phone, createOrderDto);
   }
 
   @Get()
+  @UseGuards(CustomerCapabilityGuard)
   findAllByUser(@CurrentUser() user: AuthenticatedUser) {
     return this.ordersService.findAllByUser(user.id);
   }
 
   @Get(':id')
+  @UseGuards(CustomerCapabilityGuard)
   findOne(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.ordersService.findOne(id, user.id, user.role as UserRole);
   }
@@ -32,7 +47,10 @@ export class OrdersController {
   @Patch(':id/status')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  updateStatus(@Param('id') id: string, @Body() updateOrderStatusDto: UpdateOrderStatusDto) {
+  updateStatus(
+    @Param('id') id: string,
+    @Body() updateOrderStatusDto: UpdateOrderStatusDto,
+  ) {
     return this.ordersService.updateStatus(id, updateOrderStatusDto);
   }
 }
