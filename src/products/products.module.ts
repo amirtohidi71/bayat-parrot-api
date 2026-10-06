@@ -8,6 +8,7 @@ import { ProductReviewVideo } from './entities/product-review-video.entity';
 import { ProductReviewVideosService } from './product-review-videos.service';
 import { ProductReviewVideoStorageService } from './media/product-review-video-storage.service';
 import { ProductReviewVideoUploadInterceptor } from './media/product-review-video-upload.interceptor';
+import { SellerListingProductPublisherService } from './seller-listing-product-publisher.service';
 
 @Module({
   imports: [
@@ -18,12 +19,14 @@ import { ProductReviewVideoUploadInterceptor } from './media/product-review-vide
     ProductReviewVideosService,
     ProductReviewVideoStorageService,
     ProductReviewVideoUploadInterceptor,
+    SellerListingProductPublisherService,
   ],
   controllers: [ProductsController],
   exports: [
     ProductsService,
     ProductReviewVideosService,
     ProductReviewVideoUploadInterceptor,
+    SellerListingProductPublisherService,
   ],
 })
 export class ProductsModule {}

@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { User, UserRole, isCustomerRole } from '../users/entities/user.entity';
 import {
   SellerVerification,
@@ -25,7 +25,21 @@ export class SellerEligibilityPolicy {
 
   async assertEligibleSeller(userId: string) {
     const user = await this.users.findOne({ where: { id: userId } });
-    return this.assertEligibleSellerUser(userId, user);
+    return this.assertEligibleSellerUser(userId, user, this.verifications);
+  }
+
+  async assertEligibleSellerInTransaction(
+    userId: string,
+    manager: EntityManager,
+  ) {
+    const user = await manager.getRepository(User).findOne({
+      where: { id: userId },
+    });
+    return this.assertEligibleSellerUser(
+      userId,
+      user,
+      manager.getRepository(SellerVerification),
+    );
   }
 
   async assertEligibleForBreederPromotion(userId: string) {
@@ -44,10 +58,14 @@ export class SellerEligibilityPolicy {
         'فقط کاربر عادی واجد شرایط می‌تواند درخواست پرورش‌دهنده ثبت کند.',
       );
     }
-    return this.assertEligibleSellerUser(userId, user);
+    return this.assertEligibleSellerUser(userId, user, this.verifications);
   }
 
-  private async assertEligibleSellerUser(userId: string, user: User | null) {
+  private async assertEligibleSellerUser(
+    userId: string,
+    user: User | null,
+    verifications: Repository<SellerVerification>,
+  ) {
     if (!user || !user.isActive || !isCustomerRole(user.role)) {
       throw onboardingError(
         HttpStatus.FORBIDDEN,
@@ -69,7 +87,7 @@ export class SellerEligibilityPolicy {
         'نام و نام خانوادگی باید تکمیل شود.',
       );
     }
-    const verification = await this.verifications.findOne({
+    const verification = await verifications.findOne({
       where: { userId, status: SellerVerificationStatus.APPROVED },
       order: { createdAt: 'DESC' },
     });

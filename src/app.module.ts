@@ -14,6 +14,8 @@ import { SalesChatModule } from './sales-chat/sales-chat.module';
 import { VetAppointmentsModule } from './vet-appointments/vet-appointments.module';
 import { resolveDatabaseSynchronize } from './config/database-synchronize';
 import { SellerOnboardingModule } from './seller-onboarding/seller-onboarding.module';
+import { ParrotSaleListingsModule } from './parrot-sale-listings/parrot-sale-listings.module';
+import { StockReservationsModule } from './stock-reservations/stock-reservations.module';
 
 @Module({
   imports: [
@@ -46,6 +48,8 @@ import { SellerOnboardingModule } from './seller-onboarding/seller-onboarding.mo
     SalesChatModule,
     VetAppointmentsModule,
     SellerOnboardingModule,
+    ParrotSaleListingsModule,
+    StockReservationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

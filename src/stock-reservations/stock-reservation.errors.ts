@@ -1,0 +1,20 @@
+import { HttpException, HttpStatus } from '@nestjs/common';
+
+export const StockReservationErrorCode = {
+  INVALID_REQUEST: 'STOCK_RESERVATION_INVALID_REQUEST',
+  NOT_FOUND: 'STOCK_RESERVATION_NOT_FOUND',
+  PRODUCT_NOT_FOUND: 'STOCK_RESERVATION_PRODUCT_NOT_FOUND',
+  PRODUCT_NOT_PUBLISHED: 'STOCK_RESERVATION_PRODUCT_NOT_PUBLISHED',
+  INSUFFICIENT_AVAILABILITY: 'STOCK_RESERVATION_INSUFFICIENT_AVAILABILITY',
+  INSUFFICIENT_STOCK: 'STOCK_RESERVATION_INSUFFICIENT_STOCK',
+  IDEMPOTENCY_CONFLICT: 'STOCK_RESERVATION_IDEMPOTENCY_CONFLICT',
+  INVALID_STATE: 'STOCK_RESERVATION_INVALID_STATE',
+} as const;
+
+export function stockReservationError(
+  status: HttpStatus,
+  code: string,
+  message: string,
+): HttpException {
+  return new HttpException({ statusCode: status, code, message }, status);
+}

@@ -1,6 +1,9 @@
 import { HttpException } from '@nestjs/common';
-import { UserRole, isCustomerRole } from '../users/entities/user.entity';
-import { SellerVerificationStatus } from './entities/seller-verification.entity';
+import { User, UserRole, isCustomerRole } from '../users/entities/user.entity';
+import {
+  SellerVerification,
+  SellerVerificationStatus,
+} from './entities/seller-verification.entity';
 import { SellerEligibilityPolicy } from './seller-eligibility.policy';
 import { SellerErrorCode } from './seller-onboarding.constants';
 
@@ -46,6 +49,32 @@ async function expectBaseRoleRequired(
 }
 
 describe('SellerEligibilityPolicy role separation', () => {
+  it('can recheck eligibility through transaction-scoped repositories', async () => {
+    const value = setup(UserRole.CUSTOMER);
+    const manager = {
+      getRepository: jest.fn((target: unknown) => {
+        if (target === User) return value.users;
+        if (target === SellerVerification) return value.verifications;
+        throw new Error('Unexpected repository');
+      }),
+    };
+
+    await expect(
+      value.policy.assertEligibleSellerInTransaction(
+        value.user.id,
+        manager as never,
+      ),
+    ).resolves.toEqual({
+      user: value.user,
+      verification: value.verification,
+    });
+    expect(manager.getRepository).toHaveBeenNthCalledWith(1, User);
+    expect(manager.getRepository).toHaveBeenNthCalledWith(
+      2,
+      SellerVerification,
+    );
+  });
+
   it.each([UserRole.CUSTOMER, UserRole.BREEDER])(
     'keeps general seller eligibility available to %s',
     async (role) => {

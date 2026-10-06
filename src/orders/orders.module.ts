@@ -6,9 +6,15 @@ import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { ProductsModule } from '../products/products.module';
 import { SmsModule } from '../common/sms/sms.module';
+import { StockReservationsModule } from '../stock-reservations/stock-reservations.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, OrderItem]), ProductsModule, SmsModule],
+  imports: [
+    TypeOrmModule.forFeature([Order, OrderItem]),
+    ProductsModule,
+    SmsModule,
+    StockReservationsModule,
+  ],
   providers: [OrdersService],
   controllers: [OrdersController],
   exports: [OrdersService],

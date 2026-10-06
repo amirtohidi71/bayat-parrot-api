@@ -3,43 +3,55 @@ import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { OrdersService } from './orders.service';
 
-function createService(options: { transactionError?: Error; smsError?: Error } = {}) {
+function createService(
+  options: { transactionError?: Error; smsError?: Error } = {},
+) {
   const events: string[] = [];
   const orderRepository = {
-    query: jest.fn(async () => undefined),
+    query: jest.fn(() => Promise.resolve(undefined)),
     createQueryBuilder: jest.fn(() => ({
       select: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
-      getRawOne: jest.fn(async () => ({ max: null })),
+      getRawOne: jest.fn(() => Promise.resolve({ max: null })),
     })),
-    create: jest.fn((value) => value),
-    save: jest.fn(async (value) => ({ id: 'order-1', ...value })),
+    create: jest.fn((value: Partial<Order>) =>
+      Object.assign(new Order(), value),
+    ),
+    save: jest.fn((value: Order) =>
+      Promise.resolve(Object.assign(value, { id: 'order-1' })),
+    ),
   };
   const orderItemRepository = {
-    create: jest.fn((value) => value),
-    save: jest.fn(async (value) => value),
+    create: jest.fn((value: Partial<OrderItem>) =>
+      Object.assign(new OrderItem(), value),
+    ),
+    save: jest.fn((value: OrderItem[]) => Promise.resolve(value)),
   };
   const productRepository = {};
   const manager = {
-    getRepository: jest.fn((entity) => {
+    getRepository: jest.fn((entity: unknown) => {
       if (entity === Order) return orderRepository;
       if (entity === OrderItem) return orderItemRepository;
       return productRepository;
     }),
   };
   const dataSource = {
-    transaction: jest.fn(async (callback) => {
-      events.push('transaction-start');
-      if (options.transactionError) throw options.transactionError;
-      const result = await callback(manager);
-      events.push('transaction-commit');
-      return result;
-    }),
+    transaction: jest.fn(
+      async (callback: (value: typeof manager) => Promise<Order>) => {
+        events.push('transaction-start');
+        if (options.transactionError) throw options.transactionError;
+        const result = await callback(manager);
+        events.push('transaction-commit');
+        return result;
+      },
+    ),
   };
   const smsService = {
-    sendText: jest.fn(async () => {
+    sendText: jest.fn(() => {
       events.push('sms');
-      if (options.smsError) throw options.smsError;
+      return options.smsError
+        ? Promise.reject(options.smsError)
+        : Promise.resolve(undefined);
     }),
   };
   const service = new OrdersService(
@@ -47,6 +59,11 @@ function createService(options: { transactionError?: Error; smsError?: Error } =
     orderItemRepository as never,
     smsService as never,
     dataSource as never,
+    {
+      reserveInTransaction: jest.fn(),
+      consumeForOrderInTransaction: jest.fn(),
+      releaseForOrderInTransaction: jest.fn(),
+    } as never,
   );
 
   return { service, dataSource, smsService, events };
@@ -63,9 +80,13 @@ describe('OrdersService SMS delivery', () => {
 
   it('returns the committed order when the provider fails', async () => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-    const { service, dataSource, smsService } = createService({ smsError: new Error('provider failure') });
+    const { service, dataSource, smsService } = createService({
+      smsError: new Error('provider failure'),
+    });
 
-    await expect(service.create('user-1', '09123456789', dto)).resolves.toMatchObject({
+    await expect(
+      service.create('user-1', '09123456789', dto),
+    ).resolves.toMatchObject({
       id: 'order-1',
       orderNumber: '87653221',
     });
@@ -83,9 +104,13 @@ describe('OrdersService SMS delivery', () => {
 
   it('does not send an SMS or retry order creation when the transaction fails', async () => {
     const transactionError = new Error('database failure');
-    const { service, dataSource, smsService } = createService({ transactionError });
+    const { service, dataSource, smsService } = createService({
+      transactionError,
+    });
 
-    await expect(service.create('user-1', '09123456789', dto)).rejects.toBe(transactionError);
+    await expect(service.create('user-1', '09123456789', dto)).rejects.toBe(
+      transactionError,
+    );
     expect(dataSource.transaction).toHaveBeenCalledTimes(1);
     expect(smsService.sendText).not.toHaveBeenCalled();
   });

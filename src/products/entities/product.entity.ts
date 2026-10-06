@@ -160,6 +160,9 @@ export class Product {
   @Column({ default: false })
   isAmazingOffer: boolean;
 
+  @Column({ default: false })
+  isSellerListing: boolean;
+
   @Column({ type: 'timestamptz', nullable: true })
   amazingOfferEndsAt: Date;
 

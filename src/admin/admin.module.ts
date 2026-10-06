@@ -30,6 +30,6 @@ import { assertAdminAuthConfiguration } from './admin-auth.config';
   ],
   providers: [AdminService, AdminAuthGuard, GodAdminService, GodAdminAuthGuard],
   controllers: [AdminController, GodAdminController],
-  exports: [AdminAuthGuard, JwtModule],
+  exports: [AdminAuthGuard, GodAdminAuthGuard, JwtModule],
 })
 export class AdminModule {}
