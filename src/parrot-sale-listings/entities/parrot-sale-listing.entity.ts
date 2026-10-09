@@ -23,6 +23,7 @@ export enum ParrotSaleListingStatus {
   PENDING_REVIEW = 'PENDING_REVIEW',
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
+  DELETED_BY_USER = 'DELETED_BY_USER',
 }
 
 @Entity({ name: 'parrot_sale_listings', synchronize: false })

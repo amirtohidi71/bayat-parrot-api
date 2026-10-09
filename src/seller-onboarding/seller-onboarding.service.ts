@@ -1,11 +1,17 @@
 import { HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, QueryFailedError, Repository } from 'typeorm';
+import { Product, ProductStatus } from '../products/entities/product.entity';
+import {
+  ParrotSaleListing,
+  ParrotSaleListingStatus,
+} from '../parrot-sale-listings/entities/parrot-sale-listing.entity';
 import { User, UserRole, isCustomerRole } from '../users/entities/user.entity';
 import {
   AdminBreederCallDto,
   AdminNoteDto,
   AdminRejectDto,
+  AdminRevokeSellerAccessDto,
   SubmitBreederApplicationDto,
   SubmitSellerVerificationDto,
 } from './dto/seller-onboarding.dto';
@@ -91,6 +97,9 @@ export class SellerOnboardingService {
           internalAdminNote: null,
           reviewedBy: null,
           reviewedAt: null,
+          revokedAt: null,
+          revokedBy: null,
+          revocationReason: null,
         });
         return verifications.save(verification);
       });
@@ -135,6 +144,71 @@ export class SellerOnboardingService {
       SellerVerificationStatus.REJECTED,
       input,
     );
+  }
+
+  async revokeSellerAccess(
+    id: string,
+    admin: string,
+    input: AdminRevokeSellerAccessDto,
+  ) {
+    return this.dataSource.transaction(async (manager) => {
+      const verifications = manager.getRepository(SellerVerification);
+      const initial = await verifications.findOne({ where: { id } });
+      if (!initial)
+        throw new NotFoundException('Seller verification not found');
+
+      // Stable lock order: all seller listings, verification, then linked products.
+      const listings = await manager.getRepository(ParrotSaleListing).find({
+        where: { sellerUserId: initial.userId },
+        order: { id: 'ASC' },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const verification = await this.lockedSeller(verifications, id);
+      if (
+        verification.userId !== initial.userId ||
+        verification.status !== SellerVerificationStatus.APPROVED
+      )
+        this.invalidTransition();
+      if (verification.revokedAt)
+        throw onboardingError(
+          HttpStatus.CONFLICT,
+          SellerErrorCode.ACCESS_ALREADY_REVOKED,
+          'دسترسی فروشندگی قبلاً غیرفعال شده است.',
+        );
+
+      const reviewedBy = this.admin(admin);
+      const reason = input.reason.trim();
+      const productIds = listings
+        .filter(
+          (listing) =>
+            listing.status !== ParrotSaleListingStatus.DELETED_BY_USER &&
+            listing.productId,
+        )
+        .map((listing) => listing.productId as string)
+        .sort();
+      if (productIds.length) {
+        const products = manager.getRepository(Product);
+        const linkedProducts = await products.find({
+          where: { id: In(productIds) },
+          order: { id: 'ASC' },
+          lock: { mode: 'pessimistic_write' },
+        });
+        for (const product of linkedProducts) {
+          if (product.isSellerListing) product.status = ProductStatus.DRAFT;
+        }
+        await products.save(linkedProducts);
+      }
+
+      verification.revokedAt = new Date();
+      verification.revokedBy = reviewedBy;
+      verification.revocationReason = reason;
+      const saved = await verifications.save(verification);
+      saved.user = await this.requiredUser(
+        manager.getRepository(User),
+        verification.userId,
+      );
+      return saved;
+    });
   }
 
   async submitBreeder(userId: string, input: SubmitBreederApplicationDto) {

@@ -20,6 +20,7 @@ function setup(role: UserRole) {
     userId: user.id,
     status: SellerVerificationStatus.APPROVED,
     birthDate: '2000-01-01',
+    revokedAt: null as Date | null,
   };
   const users = { findOne: jest.fn(() => Promise.resolve(user)) };
   const verifications = {
@@ -102,6 +103,20 @@ describe('SellerEligibilityPolicy role separation', () => {
         code: SellerErrorCode.VERIFICATION_REQUIRED,
         message:
           'برای ثبت آگهی فروش پرنده، ابتدا باید احراز فروشندگی شما تأیید شود.',
+      },
+    });
+  });
+
+  it('rejects revoked seller access with the stable public contract', async () => {
+    const value = setup(UserRole.CUSTOMER);
+    value.verification.revokedAt = new Date();
+    await expect(
+      value.policy.assertEligibleSeller(value.user.id),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: {
+        code: SellerErrorCode.ACCESS_REVOKED,
+        message: 'دسترسی ثبت آگهی فروش پرنده برای شما غیرفعال شده است.',
       },
     });
   });

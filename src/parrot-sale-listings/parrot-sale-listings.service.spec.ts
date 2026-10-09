@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/require-await -- transaction and repository mocks intentionally mirror async TypeORM APIs. */
 import { HttpException } from '@nestjs/common';
+import { Product, ProductStatus } from '../products/entities/product.entity';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
 import { User, UserRole } from '../users/entities/user.entity';
 import { PARROT_SALE_LISTING_PAIR_GENDER } from './dto/parrot-sale-listing.dto';
@@ -66,6 +67,18 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     profileCompleted: true,
   });
   row.seller = seller;
+  const product = Object.assign(new Product(), {
+    id: '423e4567-e89b-42d3-a456-426614174000',
+    status: ProductStatus.PUBLISHED,
+    isSellerListing: true,
+    images: ['/uploads/parrot-sale-listings/existing.webp'],
+  });
+  if (status === ParrotSaleListingStatus.APPROVED) {
+    row.productId = product.id;
+    row.approvedPrice = 120;
+    row.reviewedBy = 'admin';
+    row.reviewedAt = new Date();
+  }
   const globalListings = {
     find: jest.fn().mockResolvedValue([row]),
     findOne: jest.fn().mockResolvedValue(row),
@@ -90,11 +103,16 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
   const txUsers = {
     findOne: jest.fn().mockResolvedValue(seller),
   };
+  const txProducts = {
+    findOne: jest.fn().mockResolvedValue(product),
+    save: jest.fn(async (value: Product | Product[]) => value),
+  };
   const manager = {
     getRepository: jest.fn((target: unknown) => {
       if (target === ParrotSaleListing) return txListings;
       if (target === ParrotSaleListingImage) return txImages;
       if (target === User) return txUsers;
+      if (target === Product) return txProducts;
       throw new Error('Unexpected repository');
     }),
   };
@@ -139,6 +157,8 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     txListings,
     txImages,
     txUsers,
+    txProducts,
+    product,
     manager,
     dataSource,
     eligibility,
@@ -171,9 +191,9 @@ describe('ParrotSaleListingsService customer workflow', () => {
       species: 'Grey',
       requestedPrice: 100,
     });
-    expect(value.eligibility.assertEligibleSeller).toHaveBeenCalledWith(
-      SELLER_ID,
-    );
+    expect(
+      value.eligibility.assertEligibleSellerInTransaction,
+    ).toHaveBeenCalledWith(SELLER_ID, value.manager);
     expect(value.txListings.create).toHaveBeenCalledWith(
       expect.objectContaining({
         sellerUserId: SELLER_ID,
@@ -234,9 +254,12 @@ describe('ParrotSaleListingsService customer workflow', () => {
     const value = context();
     await value.service.listOwn(SELLER_ID);
     await value.service.getOwn(SELLER_ID, LISTING_ID);
-    expect(value.globalListings.find).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { sellerUserId: SELLER_ID } }),
-    );
+    const listCalls = value.globalListings.find.mock.calls as unknown as Array<
+      [{ where: { sellerUserId: string; status: unknown } }]
+    >;
+    const listOptions = listCalls[0]?.[0];
+    expect(listOptions?.where.sellerUserId).toBe(SELLER_ID);
+    expect(listOptions?.where.status).toBeDefined();
     expect(value.globalListings.findOne).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: LISTING_ID, sellerUserId: SELLER_ID },
@@ -307,16 +330,46 @@ describe('ParrotSaleListingsService customer workflow', () => {
 
   it.each([
     ParrotSaleListingStatus.PENDING_REVIEW,
-    ParrotSaleListingStatus.APPROVED,
     ParrotSaleListingStatus.REJECTED,
-  ])('keeps %s listings immutable', async (status) => {
-    const value = context(status);
-    await expectCode(
-      value.service.update(SELLER_ID, LISTING_ID, { name: 'No' }),
-      409,
-      ParrotSaleListingErrorCode.NOT_EDITABLE,
-    );
-    expect(value.txListings.save).not.toHaveBeenCalled();
+  ])(
+    'allows an owner to edit a %s listing without changing its state',
+    async (status) => {
+      const value = context(status);
+      await expect(
+        value.service.update(SELLER_ID, LISTING_ID, { name: 'Updated' }),
+      ).resolves.toMatchObject({ name: 'Updated', status });
+    },
+  );
+
+  it('unpublishes the linked Product and returns an approved edit to review', async () => {
+    const value = context(ParrotSaleListingStatus.APPROVED);
+    await expect(
+      value.service.update(SELLER_ID, LISTING_ID, { name: 'Updated' }),
+    ).resolves.toMatchObject({
+      name: 'Updated',
+      status: ParrotSaleListingStatus.PENDING_REVIEW,
+      productId: value.product.id,
+      approvedPrice: null,
+    });
+    expect(value.txProducts.findOne).toHaveBeenCalledWith({
+      where: { id: value.product.id },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(value.product.status).toBe(ProductStatus.DRAFT);
+  });
+
+  it('retains the linked Product audit reference if a re-review is rejected', async () => {
+    const value = context(ParrotSaleListingStatus.APPROVED);
+    await value.service.update(SELLER_ID, LISTING_ID, { name: 'Updated' });
+    await expect(
+      value.service.reject(LISTING_ID, 'pahlevan', {
+        rejectionReason: 'More evidence is required',
+      }),
+    ).resolves.toMatchObject({
+      status: ParrotSaleListingStatus.REJECTED,
+      productId: value.product.id,
+      approvedPrice: null,
+    });
   });
 
   it('returns the same 404 for a missing or another seller listing', async () => {
@@ -327,6 +380,17 @@ describe('ParrotSaleListingsService customer workflow', () => {
       404,
       ParrotSaleListingErrorCode.NOT_FOUND,
     );
+  });
+
+  it('does not let a non-owner edit a listing', async () => {
+    const value = context();
+    value.txListings.findOne.mockResolvedValueOnce(null);
+    await expectCode(
+      value.service.update(SELLER_ID, LISTING_ID, { name: 'No access' }),
+      404,
+      ParrotSaleListingErrorCode.NOT_FOUND,
+    );
+    expect(value.txListings.save).not.toHaveBeenCalled();
   });
 
   it('reads a private image only after server-authoritative ownership lookup', async () => {
@@ -453,8 +517,8 @@ describe('ParrotSaleListingsService customer workflow', () => {
     expect(value.txImages.save).not.toHaveBeenCalled();
   });
 
-  it('does not store or mutate images for a final listing', async () => {
-    const add = context(ParrotSaleListingStatus.APPROVED);
+  it('does not store or mutate images for a deleted listing', async () => {
+    const add = context(ParrotSaleListingStatus.DELETED_BY_USER);
     await expectCode(
       add.service.addImage(SELLER_ID, LISTING_ID, Buffer.from('image')),
       409,
@@ -462,7 +526,7 @@ describe('ParrotSaleListingsService customer workflow', () => {
     );
     expect(add.storage.save).not.toHaveBeenCalled();
 
-    const remove = context(ParrotSaleListingStatus.REJECTED);
+    const remove = context(ParrotSaleListingStatus.DELETED_BY_USER);
     await expectCode(
       remove.service.deleteImage(SELLER_ID, LISTING_ID, IMAGE_ID),
       409,
@@ -496,6 +560,49 @@ describe('ParrotSaleListingsService customer workflow', () => {
     expect(result.status).toBe(ParrotSaleListingStatus.PENDING_REVIEW);
   });
 
+  it('clears rejection metadata when resubmitting an edited rejected listing', async () => {
+    const value = context(ParrotSaleListingStatus.REJECTED);
+    value.row.rejectionReason = 'Fix details';
+    value.row.internalAdminNote = 'private';
+    value.row.reviewedBy = 'admin';
+    value.row.reviewedAt = new Date();
+    const result = await value.service.submit(SELLER_ID, LISTING_ID);
+    expect(result).toMatchObject({
+      status: ParrotSaleListingStatus.PENDING_REVIEW,
+      rejectionReason: null,
+      internalAdminNote: null,
+      reviewedBy: null,
+      reviewedAt: null,
+    });
+  });
+
+  it.each(['create', 'submit'] as const)(
+    'blocks %s when seller access has been revoked',
+    async (operation) => {
+      const value = context();
+      value.eligibility.assertEligibleSellerInTransaction.mockRejectedValueOnce(
+        new HttpException(
+          {
+            statusCode: 403,
+            code: 'SELLER_ACCESS_REVOKED',
+            message: 'revoked',
+          },
+          403,
+        ),
+      );
+      const action =
+        operation === 'create'
+          ? value.service.create(SELLER_ID, {
+              name: 'Bird',
+              species: 'Grey',
+              requestedPrice: 100,
+            })
+          : value.service.submit(SELLER_ID, LISTING_ID);
+      await expectCode(action, 403, 'SELLER_ACCESS_REVOKED');
+      expect(value.txListings.save).not.toHaveBeenCalled();
+    },
+  );
+
   it('rejects submit without an image and leaves the listing DRAFT', async () => {
     const value = context();
     value.txImages.count.mockResolvedValueOnce(0);
@@ -519,6 +626,42 @@ describe('ParrotSaleListingsService customer workflow', () => {
       value.eligibility.assertEligibleSellerInTransaction,
     ).not.toHaveBeenCalled();
     expect(value.txListings.save).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ParrotSaleListingStatus.DRAFT,
+    ParrotSaleListingStatus.REJECTED,
+    ParrotSaleListingStatus.PENDING_REVIEW,
+  ])('soft-deletes an owned %s listing for audit', async (status) => {
+    const value = context(status);
+    await expect(
+      value.service.delete(SELLER_ID, LISTING_ID),
+    ).resolves.toMatchObject({
+      status: ParrotSaleListingStatus.DELETED_BY_USER,
+    });
+    expect(value.txListings.findOne).toHaveBeenCalledWith({
+      where: { id: LISTING_ID, sellerUserId: SELLER_ID },
+      lock: { mode: 'pessimistic_write' },
+    });
+  });
+
+  it('soft-deletes an approved listing and unpublishes its linked Product', async () => {
+    const value = context(ParrotSaleListingStatus.APPROVED);
+    await value.service.delete(SELLER_ID, LISTING_ID);
+    expect(value.row.status).toBe(ParrotSaleListingStatus.DELETED_BY_USER);
+    expect(value.product.status).toBe(ProductStatus.DRAFT);
+  });
+
+  it('soft-deletes a re-review listing while retaining its linked Product audit reference', async () => {
+    const value = context(ParrotSaleListingStatus.APPROVED);
+    await value.service.update(SELLER_ID, LISTING_ID, { name: 'Updated' });
+    await expect(
+      value.service.delete(SELLER_ID, LISTING_ID),
+    ).resolves.toMatchObject({
+      status: ParrotSaleListingStatus.DELETED_BY_USER,
+      productId: value.product.id,
+      approvedPrice: null,
+    });
   });
 
   it('rejects a pending listing under lock and records the authenticated reviewer', async () => {
@@ -548,6 +691,7 @@ describe('ParrotSaleListingsService customer workflow', () => {
     ParrotSaleListingStatus.DRAFT,
     ParrotSaleListingStatus.APPROVED,
     ParrotSaleListingStatus.REJECTED,
+    ParrotSaleListingStatus.DELETED_BY_USER,
   ])('rejects admin rejection from immutable state %s', async (status) => {
     const value = context(status);
     await expectCode(

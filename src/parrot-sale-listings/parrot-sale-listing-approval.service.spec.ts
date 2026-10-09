@@ -123,6 +123,19 @@ function context() {
         return product;
       },
     ),
+    republish: jest.fn(
+      async (
+        _manager: unknown,
+        _productId: string,
+        input: SellerListingProductInput,
+      ) => {
+        capturedProductInput = input;
+        return {
+          product,
+          replacedImages: ['/uploads/parrot-sale-listings/old.webp'],
+        };
+      },
+    ),
   };
   const service = new ParrotSaleListingApprovalService(
     dataSource as never,
@@ -221,6 +234,18 @@ describe('ParrotSaleListingApprovalService', () => {
     expect(value.products.create).not.toHaveBeenCalled();
   });
 
+  it('never approves a listing deleted by its owner', async () => {
+    const value = context();
+    value.row.status = ParrotSaleListingStatus.DELETED_BY_USER;
+    await expectCode(
+      value.service.approve(LISTING_ID, 'owner', { publicPrice: 120 }),
+      409,
+      ParrotSaleListingErrorCode.INVALID_TRANSITION,
+    );
+    expect(value.products.create).not.toHaveBeenCalled();
+    expect(value.products.republish).not.toHaveBeenCalled();
+  });
+
   it('never publishes a private image that fails the safe read validation', async () => {
     const value = context();
     value.privateImages.read.mockRejectedValueOnce(
@@ -259,6 +284,28 @@ describe('ParrotSaleListingApprovalService', () => {
     expect(value.products.create).toHaveBeenCalledTimes(1);
     expect(value.publicImages.publish).toHaveBeenCalledTimes(1);
     expect(value.row.productId).toBe(PRODUCT_ID);
+  });
+
+  it('reuses and republishes the linked Product after an approved listing edit', async () => {
+    const value = context();
+    value.row.productId = PRODUCT_ID;
+    const result = await value.service.approve(LISTING_ID, 'owner', {
+      publicPrice: 130,
+    });
+    expect(value.products.republish).toHaveBeenCalledWith(
+      value.manager,
+      PRODUCT_ID,
+      expect.objectContaining({ publicPrice: 130 }),
+    );
+    expect(value.products.create).not.toHaveBeenCalled();
+    expect(result.listing).toMatchObject({
+      productId: PRODUCT_ID,
+      status: ParrotSaleListingStatus.APPROVED,
+      approvedPrice: 130,
+    });
+    expect(value.publicImages.remove).toHaveBeenCalledWith([
+      '/uploads/parrot-sale-listings/old.webp',
+    ]);
   });
 });
 
@@ -318,6 +365,51 @@ describe('ProductsService seller-listing product helper', () => {
     expect(product).not.toHaveProperty('sellerUserId');
     expect(product).not.toHaveProperty('requestedPrice');
     expect(product).not.toHaveProperty('internalAdminNote');
+  });
+
+  it('locks and republishes an existing linked seller Product without changing its identity', async () => {
+    const product = Object.assign(new Product(), {
+      id: PRODUCT_ID,
+      sku: 'BP140507170001',
+      status: ProductStatus.DRAFT,
+      isSellerListing: true,
+      images: ['/uploads/parrot-sale-listings/old.webp'],
+    });
+    const repository = {
+      findOne: jest.fn().mockResolvedValue(product),
+      save: jest.fn(async (value: Product) => value),
+    };
+    const manager = { getRepository: jest.fn(() => repository) };
+    const service = new SellerListingProductPublisherService();
+    const result = await service.republish(manager as never, PRODUCT_ID, {
+      name: 'Updated bird',
+      description: null,
+      publicPrice: 140,
+      quantity: 2,
+      species: 'Grey',
+      subspecies: null,
+      gender: null,
+      ageStage: null,
+      colors: null,
+      tagPair: false,
+      tagHandTame: true,
+      images: ['/uploads/parrot-sale-listings/new.webp'],
+    });
+    expect(repository.findOne).toHaveBeenCalledWith({
+      where: { id: PRODUCT_ID },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(result.replacedImages).toEqual([
+      '/uploads/parrot-sale-listings/old.webp',
+    ]);
+    expect(result.product).toMatchObject({
+      id: PRODUCT_ID,
+      sku: 'BP140507170001',
+      name: 'Updated bird',
+      price: 140,
+      stock: 2,
+      status: ProductStatus.PUBLISHED,
+    });
   });
 
   it('returns every field used by the normal public price and shipping card', async () => {

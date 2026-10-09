@@ -63,6 +63,15 @@ export class SellerVerification {
   @Column({ type: 'timestamptz', nullable: true })
   reviewedAt: Date | null;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  revokedAt: Date | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  revokedBy: string | null;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  revocationReason: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

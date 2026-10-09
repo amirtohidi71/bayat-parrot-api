@@ -108,6 +108,7 @@ describe('parrot sale listing schema and DTO contracts', () => {
       'PENDING_REVIEW',
       'APPROVED',
       'REJECTED',
+      'DELETED_BY_USER',
     ]);
     expect(PARROT_SALE_LISTING_MIN_IMAGES).toBe(1);
     expect(PARROT_SALE_LISTING_MAX_IMAGES).toBe(8);
@@ -325,6 +326,41 @@ describe('parrot sale listing schema and DTO contracts', () => {
     expect(rollback).toContain(
       'ALTER TABLE public.products DROP COLUMN "isSellerListing"',
     );
+    expect(rollback).not.toContain('CASCADE');
+  });
+
+  it('defines the guarded lifecycle migration and refuses destructive rollback', () => {
+    const migration = readFileSync(
+      join(
+        process.cwd(),
+        'scripts/migrations/20261009-add-parrot-sale-listing-lifecycle-v1.sql',
+      ),
+      'utf8',
+    );
+    const rollback = readFileSync(
+      join(
+        process.cwd(),
+        'scripts/migrations/20261009-rollback-parrot-sale-listing-lifecycle-v1.sql',
+      ),
+      'utf8',
+    );
+    expect(migration).toContain("ADD VALUE 'DELETED_BY_USER'");
+    expect(migration).toContain('ADD COLUMN "revokedAt" timestamptz');
+    expect(migration).toContain('CHK_seller_verifications_revocation');
+    expect(migration).toContain("status = 'PENDING_REVIEW'");
+    expect(migration).toContain(
+      `status = 'REJECTED'
+      AND "approvedPrice" IS NULL
+      AND length(btrim("rejectionReason")) > 0`,
+    );
+    expect(migration).toContain(
+      `status = 'DELETED_BY_USER'
+      AND ("approvedPrice" IS NULL OR "productId" IS NOT NULL)`,
+    );
+    expect(rollback).toContain(
+      'Rollback refused: listing lifecycle or seller revocation history exists',
+    );
+    expect(rollback).toContain("status IN ('PENDING_REVIEW', 'REJECTED')");
     expect(rollback).not.toContain('CASCADE');
   });
 });

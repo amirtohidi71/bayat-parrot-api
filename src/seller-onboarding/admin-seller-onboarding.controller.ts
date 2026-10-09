@@ -15,6 +15,7 @@ import {
   AdminBreederCallDto,
   AdminNoteDto,
   AdminRejectDto,
+  AdminRevokeSellerAccessDto,
   ListBreederApplicationsDto,
   ListSellerVerificationsDto,
 } from './dto/seller-onboarding.dto';
@@ -62,6 +63,21 @@ export class AdminSellerOnboardingController {
   ) {
     return sellerAdminResponse(
       await this.onboarding.rejectSeller(id, request.admin.username, input),
+    );
+  }
+
+  @Post('verifications/:id/revoke')
+  async revokeVerification(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() input: AdminRevokeSellerAccessDto,
+    @Req() request: AdminRequest,
+  ) {
+    return sellerAdminResponse(
+      await this.onboarding.revokeSellerAccess(
+        id,
+        request.admin.username,
+        input,
+      ),
     );
   }
 

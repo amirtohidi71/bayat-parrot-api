@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { SellerListingProductPublisherService } from '../products/seller-listing-product-publisher.service';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
@@ -23,6 +23,8 @@ import { assertParrotSaleListingImageCount } from './parrot-sale-listing.validat
 
 @Injectable()
 export class ParrotSaleListingApprovalService {
+  private readonly logger = new Logger(ParrotSaleListingApprovalService.name);
+
   constructor(
     private readonly dataSource: DataSource,
     private readonly eligibility: SellerEligibilityPolicy,
@@ -37,8 +39,9 @@ export class ParrotSaleListingApprovalService {
     input: ApproveParrotSaleListingDto,
   ) {
     const publishedPaths: string[] = [];
+    let replacedPaths: string[] = [];
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      const result = await this.dataSource.transaction(async (manager) => {
         const listings = manager.getRepository(ParrotSaleListing);
         const listing = await listings.findOne({
           where: { id },
@@ -99,7 +102,7 @@ export class ParrotSaleListingApprovalService {
         );
 
         const reviewedBy = this.reviewer(reviewer);
-        const product = await this.products.create(manager, {
+        const productInput = {
           name: listing.name,
           description: listing.description,
           publicPrice: input.publicPrice,
@@ -112,7 +115,19 @@ export class ParrotSaleListingApprovalService {
           tagPair: listing.tagPair,
           tagHandTame: listing.tagHandTame,
           images: publishedPaths,
-        });
+        };
+        const publication = listing.productId
+          ? await this.products.republish(
+              manager,
+              listing.productId,
+              productInput,
+            )
+          : {
+              product: await this.products.create(manager, productInput),
+              replacedImages: [] as string[],
+            };
+        const product = publication.product;
+        replacedPaths = publication.replacedImages;
 
         listing.status = ParrotSaleListingStatus.APPROVED;
         listing.productId = product.id;
@@ -134,6 +149,13 @@ export class ParrotSaleListingApprovalService {
         saved.images = images;
         return { listing: saved, product };
       });
+      if (replacedPaths.length)
+        await this.publicImages.remove(replacedPaths).catch(() => {
+          this.logger.warn(
+            'Replaced seller listing images could not be removed',
+          );
+        });
+      return result;
     } catch (error) {
       await this.publicImages.remove(publishedPaths).catch(() => undefined);
       throw error;

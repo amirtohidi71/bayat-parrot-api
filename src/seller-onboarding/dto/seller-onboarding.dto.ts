@@ -179,6 +179,13 @@ export class AdminRejectDto {
   internalAdminNote?: string;
 }
 
+export class AdminRevokeSellerAccessDto {
+  @Transform(trim)
+  @IsString()
+  @Length(1, 500)
+  reason: string;
+}
+
 export class AdminBreederCallDto {
   @IsEnum(BreederCallOutcome)
   outcome: BreederCallOutcome;

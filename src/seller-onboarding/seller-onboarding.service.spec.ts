@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/require-await */
 import { HttpException } from '@nestjs/common';
 import { QueryFailedError } from 'typeorm';
+import { ProductStatus } from '../products/entities/product.entity';
+import { ParrotSaleListingStatus } from '../parrot-sale-listings/entities/parrot-sale-listing.entity';
 import { User, UserRole } from '../users/entities/user.entity';
 import {
   BreederApplicationStatus,
@@ -29,10 +31,14 @@ function setup() {
   const txUsers = entityRepository();
   const txSellers = entityRepository();
   const txBreeders = entityRepository();
+  const txListings = entityRepository();
+  const txProducts = entityRepository();
   const manager = {
     getRepository: jest.fn((entity) => {
       if (entity.name === 'User') return txUsers;
       if (entity.name === 'SellerVerification') return txSellers;
+      if (entity.name === 'ParrotSaleListing') return txListings;
+      if (entity.name === 'Product') return txProducts;
       return txBreeders;
     }),
   };
@@ -56,6 +62,8 @@ function setup() {
     txUsers,
     txSellers,
     txBreeders,
+    txListings,
+    txProducts,
     dataSource,
     manager,
     eligibility,
@@ -186,6 +194,70 @@ describe('SellerOnboardingService security and transitions', () => {
     expect(value.txSellers.save).toHaveBeenCalledWith(verification);
     expect(value.sellers.findOne).not.toHaveBeenCalled();
     expect(value.sellers.save).not.toHaveBeenCalled();
+  });
+
+  it('revokes approved seller access and unpublishes linked listing Products', async () => {
+    const value = setup();
+    const verification = {
+      id: 'seller-1',
+      userId: 'user-1',
+      status: SellerVerificationStatus.APPROVED,
+      revokedAt: null,
+      revokedBy: null,
+      revocationReason: null,
+    };
+    const listing = {
+      id: 'listing-1',
+      sellerUserId: 'user-1',
+      status: ParrotSaleListingStatus.APPROVED,
+      productId: 'product-1',
+    };
+    const product = {
+      id: 'product-1',
+      isSellerListing: true,
+      status: ProductStatus.PUBLISHED,
+    };
+    value.txSellers.findOne
+      .mockResolvedValueOnce(verification)
+      .mockResolvedValueOnce(verification);
+    value.txListings.find.mockResolvedValue([listing]);
+    value.txProducts.find.mockResolvedValue([product]);
+    value.txUsers.findOne.mockResolvedValue(activeUser);
+
+    const result = await value.service.revokeSellerAccess(
+      'seller-1',
+      'pahlevan',
+      { reason: 'Policy violation' },
+    );
+
+    expect(value.txListings.find).toHaveBeenCalledWith({
+      where: { sellerUserId: 'user-1' },
+      order: { id: 'ASC' },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(value.txSellers.findOne).toHaveBeenLastCalledWith({
+      where: { id: 'seller-1' },
+      lock: { mode: 'pessimistic_write' },
+    });
+    const productFindOptions = value.txProducts.find.mock.calls[0]?.[0] as
+      | {
+          where: { id: unknown };
+          order: { id: 'ASC' };
+          lock: { mode: 'pessimistic_write' };
+        }
+      | undefined;
+    expect(productFindOptions).toMatchObject({
+      order: { id: 'ASC' },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(productFindOptions?.where.id).toBeDefined();
+    expect(product.status).toBe(ProductStatus.DRAFT);
+    expect(result).toMatchObject({
+      revokedBy: 'pahlevan',
+      revocationReason: 'Policy violation',
+      user: activeUser,
+    });
+    expect(result.revokedAt).toBeInstanceOf(Date);
   });
 
   it('requires OTP evidence before creating a seller verification', async () => {

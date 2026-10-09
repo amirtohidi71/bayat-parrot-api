@@ -76,6 +76,7 @@ describe('Admin seller onboarding HTTP authorization', () => {
     sellerDetail: jest.fn(),
     approveSeller: jest.fn(),
     rejectSeller: jest.fn(),
+    revokeSellerAccess: jest.fn(),
     listBreeders: jest.fn(),
     breederDetail: jest.fn(),
     recordBreederCall: jest.fn(),
@@ -110,6 +111,13 @@ describe('Admin seller onboarding HTTP authorization', () => {
     onboarding.sellerDetail.mockResolvedValue(seller);
     onboarding.approveSeller.mockResolvedValue(seller);
     onboarding.rejectSeller.mockResolvedValue(seller);
+    onboarding.revokeSellerAccess.mockResolvedValue({
+      ...seller,
+      status: SellerVerificationStatus.APPROVED,
+      revokedAt: new Date(),
+      revokedBy: adminUsernames[0],
+      revocationReason: 'Policy violation',
+    });
     onboarding.listBreeders.mockResolvedValue([]);
     onboarding.breederDetail.mockResolvedValue(breeder);
     onboarding.recordBreederCall.mockResolvedValue(breeder);
@@ -145,6 +153,11 @@ describe('Admin seller onboarding HTTP authorization', () => {
       .send({ rejectionReason: 'Correction required' })
       .expect(201);
     await request(server)
+      .post(`/admin-panel/seller-onboarding/verifications/${id}/revoke`)
+      .set('Authorization', authorization)
+      .send({ reason: 'Policy violation' })
+      .expect(201);
+    await request(server)
       .get('/admin-panel/seller-onboarding/breeder-applications')
       .set('Authorization', authorization)
       .expect(200);
@@ -166,6 +179,30 @@ describe('Admin seller onboarding HTTP authorization', () => {
       .set('Authorization', authorization)
       .send({ rejectionReason: 'Correction required' })
       .expect(201);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['customer', { sub: randomUUID(), phone: '09120000000', role: 'customer' }],
+  ])(
+    'rejects %s credentials from seller access revocation',
+    async (_kind, payload) => {
+      const call = request(server)
+        .post(`/admin-panel/seller-onboarding/verifications/${id}/revoke`)
+        .send({ reason: 'Policy violation' });
+      if (payload) call.set('Authorization', bearer(payload));
+      await call.expect(401);
+      expect(onboarding.revokeSellerAccess).not.toHaveBeenCalled();
+    },
+  );
+
+  it('requires a bounded revocation reason', async () => {
+    await request(server)
+      .post(`/admin-panel/seller-onboarding/verifications/${id}/revoke`)
+      .set('Authorization', adminBearer())
+      .send({ reason: '   ' })
+      .expect(400);
+    expect(onboarding.revokeSellerAccess).not.toHaveBeenCalled();
   });
 
   it('accepts every configured admin-panel identity', async () => {

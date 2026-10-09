@@ -95,6 +95,16 @@ export class ParrotSaleListingsController {
     );
   }
 
+  @Delete(':id')
+  async delete(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', uuidPipe) id: string,
+  ) {
+    return parrotSaleListingSellerResponse(
+      await this.listings.delete(user.id, id),
+    );
+  }
+
   @Post(':id/images')
   @UseInterceptors(
     FileInterceptor('image', parrotSaleListingImageUploadOptions),

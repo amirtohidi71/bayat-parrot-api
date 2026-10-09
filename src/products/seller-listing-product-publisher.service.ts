@@ -38,6 +38,34 @@ export class SellerListingProductPublisherService {
     const sku = await this.generateNextSku(products, skuPrefix);
     const payload: DeepPartial<Product> = {
       sku,
+      ...this.publicPayload(input),
+    };
+    return products.save(products.create(payload));
+  }
+
+  async republish(
+    manager: EntityManager,
+    productId: string,
+    input: SellerListingProductInput,
+  ): Promise<{ product: Product; replacedImages: string[] }> {
+    const products = manager.getRepository(Product);
+    const product = await products.findOne({
+      where: { id: productId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!product?.isSellerListing)
+      throw new BadRequestException('Linked seller listing product is invalid');
+    const replacedImages = [...(product.images ?? [])];
+    Object.assign(product, this.publicPayload(input), {
+      status: ProductStatus.PUBLISHED,
+    });
+    return { product: await products.save(product), replacedImages };
+  }
+
+  private publicPayload(
+    input: SellerListingProductInput,
+  ): DeepPartial<Product> {
+    return {
       name: input.name,
       description: input.description ?? undefined,
       specifications: null,
@@ -65,7 +93,6 @@ export class SellerListingProductPublisherService {
       isSellerListing: true,
       images: input.images,
     };
-    return products.save(products.create(payload));
   }
 
   private async generateNextSku(

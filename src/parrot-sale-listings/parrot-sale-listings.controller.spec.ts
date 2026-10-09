@@ -51,6 +51,13 @@ describe('ParrotSaleListingsController customer routes', () => {
     update: jest.fn().mockImplementation(() => Promise.resolve(listing())),
     addImage: jest.fn().mockImplementation(() => Promise.resolve(listing())),
     deleteImage: jest.fn().mockImplementation(() => Promise.resolve(listing())),
+    delete: jest.fn().mockImplementation(() =>
+      Promise.resolve(
+        Object.assign(listing(), {
+          status: ParrotSaleListingStatus.DELETED_BY_USER,
+        }),
+      ),
+    ),
     submit: jest.fn().mockImplementation(() => Promise.resolve(listing())),
     getOptions: jest.fn().mockResolvedValue({
       species: ['african-grey'],
@@ -89,6 +96,7 @@ describe('ParrotSaleListingsController customer routes', () => {
       ':id/images/:imageId',
       RequestMethod.DELETE,
     ]);
+    expect(route('delete')).toEqual([':id', RequestMethod.DELETE]);
     expect(route('submit')).toEqual([':id/submit', RequestMethod.POST]);
   });
 
@@ -127,6 +135,7 @@ describe('ParrotSaleListingsController customer routes', () => {
       mimetype: 'image/png',
     } as Express.Multer.File);
     await controller.deleteImage(user, LISTING_ID, 'image-id');
+    await controller.delete(user, LISTING_ID);
     await controller.readOwnImage(user, LISTING_ID, 'image-id');
     await controller.submit(user, LISTING_ID);
     expect(service.getOwn).toHaveBeenCalledWith(SELLER_ID, LISTING_ID);
@@ -151,6 +160,7 @@ describe('ParrotSaleListingsController customer routes', () => {
       LISTING_ID,
       'image-id',
     );
+    expect(service.delete).toHaveBeenCalledWith(SELLER_ID, LISTING_ID);
     expect(service.submit).toHaveBeenCalledWith(SELLER_ID, LISTING_ID);
   });
 

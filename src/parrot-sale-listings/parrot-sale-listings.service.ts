@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, Not, Repository } from 'typeorm';
+import { Product, ProductStatus } from '../products/entities/product.entity';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
 import { User } from '../users/entities/user.entity';
 import {
@@ -41,8 +42,11 @@ export class ParrotSaleListingsService {
   }
 
   async create(sellerUserId: string, input: CreateParrotSaleListingDto) {
-    await this.eligibility.assertEligibleSeller(sellerUserId);
     return this.dataSource.transaction(async (manager) => {
+      await this.eligibility.assertEligibleSellerInTransaction(
+        sellerUserId,
+        manager,
+      );
       await this.options.assertValidSelection(input, manager);
       const listings = manager.getRepository(ParrotSaleListing);
       const listing = listings.create({
@@ -81,7 +85,10 @@ export class ParrotSaleListingsService {
 
   async listOwn(sellerUserId: string) {
     const values = await this.listings.find({
-      where: { sellerUserId },
+      where: {
+        sellerUserId,
+        status: Not(ParrotSaleListingStatus.DELETED_BY_USER),
+      },
       relations: { images: true },
       order: { createdAt: 'DESC' },
     });
@@ -161,7 +168,7 @@ export class ParrotSaleListingsService {
     return this.dataSource.transaction(async (manager) => {
       const listings = manager.getRepository(ParrotSaleListing);
       const listing = await this.lockedOwned(listings, sellerUserId, id);
-      this.assertDraft(listing);
+      this.assertEditable(listing);
       await this.eligibility.assertEligibleSellerInTransaction(
         sellerUserId,
         manager,
@@ -174,6 +181,7 @@ export class ParrotSaleListingsService {
         },
         manager,
       );
+      await this.prepareForEdit(listing, manager);
       this.applyUpdate(listing, input);
       const saved = await listings.save(listing);
       return this.withImages(saved, manager);
@@ -186,14 +194,19 @@ export class ParrotSaleListingsService {
     buffer: Buffer,
     suppliedMimeType?: string,
   ) {
-    this.assertDraft(await this.getOwn(sellerUserId, id));
+    this.assertEditable(await this.getOwn(sellerUserId, id));
     const storageKey = await this.storage.save(buffer, suppliedMimeType);
     try {
       return await this.dataSource.transaction(async (manager) => {
         const listings = manager.getRepository(ParrotSaleListing);
         const images = manager.getRepository(ParrotSaleListingImage);
         const listing = await this.lockedOwned(listings, sellerUserId, id);
-        this.assertDraft(listing);
+        this.assertEditable(listing);
+        await this.eligibility.assertEligibleSellerInTransaction(
+          sellerUserId,
+          manager,
+        );
+        await this.prepareForEdit(listing, manager);
         const existing = await images.find({
           where: { listingId: listing.id },
           order: { position: 'ASC' },
@@ -235,7 +248,12 @@ export class ParrotSaleListingsService {
       const listings = manager.getRepository(ParrotSaleListing);
       const images = manager.getRepository(ParrotSaleListingImage);
       const listing = await this.lockedOwned(listings, sellerUserId, id);
-      this.assertDraft(listing);
+      this.assertEditable(listing);
+      await this.eligibility.assertEligibleSellerInTransaction(
+        sellerUserId,
+        manager,
+      );
+      await this.prepareForEdit(listing, manager);
       const image = await images.findOne({
         where: { id: imageId, listingId: listing.id },
       });
@@ -264,7 +282,7 @@ export class ParrotSaleListingsService {
       const listings = manager.getRepository(ParrotSaleListing);
       const images = manager.getRepository(ParrotSaleListingImage);
       const listing = await this.lockedOwned(listings, sellerUserId, id);
-      this.assertDraft(listing);
+      this.assertSubmittable(listing);
       await this.eligibility.assertEligibleSellerInTransaction(
         sellerUserId,
         manager,
@@ -274,6 +292,28 @@ export class ParrotSaleListingsService {
       });
       assertParrotSaleListingImageCount(imageCount);
       listing.status = ParrotSaleListingStatus.PENDING_REVIEW;
+      listing.approvedPrice = null;
+      listing.rejectionReason = null;
+      listing.internalAdminNote = null;
+      listing.reviewedBy = null;
+      listing.reviewedAt = null;
+      const saved = await listings.save(listing);
+      return this.withImages(saved, manager);
+    });
+  }
+
+  async delete(sellerUserId: string, id: string) {
+    return this.dataSource.transaction(async (manager) => {
+      const listings = manager.getRepository(ParrotSaleListing);
+      const listing = await this.lockedOwned(listings, sellerUserId, id);
+      if (listing.status === ParrotSaleListingStatus.DELETED_BY_USER)
+        throw parrotSaleListingError(
+          HttpStatus.CONFLICT,
+          ParrotSaleListingErrorCode.ALREADY_DELETED,
+          'Parrot sale listing is already deleted by the seller',
+        );
+      await this.unpublishLinkedProduct(listing, manager);
+      listing.status = ParrotSaleListingStatus.DELETED_BY_USER;
       const saved = await listings.save(listing);
       return this.withImages(saved, manager);
     });
@@ -382,13 +422,68 @@ export class ParrotSaleListingsService {
     if (input.quantity !== undefined) listing.quantity = input.quantity;
   }
 
-  private assertDraft(listing: ParrotSaleListing): void {
-    if (listing.status !== ParrotSaleListingStatus.DRAFT)
+  private assertEditable(listing: ParrotSaleListing): void {
+    if (
+      ![
+        ParrotSaleListingStatus.DRAFT,
+        ParrotSaleListingStatus.REJECTED,
+        ParrotSaleListingStatus.PENDING_REVIEW,
+        ParrotSaleListingStatus.APPROVED,
+      ].includes(listing.status)
+    )
       throw parrotSaleListingError(
         HttpStatus.CONFLICT,
         ParrotSaleListingErrorCode.NOT_EDITABLE,
-        'Only draft parrot sale listings can be changed',
+        'Deleted parrot sale listings cannot be changed',
       );
+  }
+
+  private assertSubmittable(listing: ParrotSaleListing): void {
+    if (
+      ![
+        ParrotSaleListingStatus.DRAFT,
+        ParrotSaleListingStatus.REJECTED,
+      ].includes(listing.status)
+    )
+      throw parrotSaleListingError(
+        HttpStatus.CONFLICT,
+        ParrotSaleListingErrorCode.NOT_EDITABLE,
+        'Only draft or rejected parrot sale listings can be submitted',
+      );
+  }
+
+  private async prepareForEdit(
+    listing: ParrotSaleListing,
+    manager: EntityManager,
+  ): Promise<void> {
+    if (listing.status !== ParrotSaleListingStatus.APPROVED) return;
+    await this.unpublishLinkedProduct(listing, manager);
+    listing.status = ParrotSaleListingStatus.PENDING_REVIEW;
+    listing.approvedPrice = null;
+    listing.rejectionReason = null;
+    listing.internalAdminNote = null;
+    listing.reviewedBy = null;
+    listing.reviewedAt = null;
+  }
+
+  private async unpublishLinkedProduct(
+    listing: ParrotSaleListing,
+    manager: EntityManager,
+  ): Promise<void> {
+    if (!listing.productId) return;
+    const products = manager.getRepository(Product);
+    const product = await products.findOne({
+      where: { id: listing.productId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!product?.isSellerListing)
+      throw parrotSaleListingError(
+        HttpStatus.CONFLICT,
+        ParrotSaleListingErrorCode.PUBLICATION_CONFLICT,
+        'Linked seller listing product is unavailable',
+      );
+    product.status = ProductStatus.DRAFT;
+    await products.save(product);
   }
 
   private sortImages(listing: ParrotSaleListing): ParrotSaleListing {

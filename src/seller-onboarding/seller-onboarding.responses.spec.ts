@@ -35,6 +35,9 @@ describe('seller onboarding response allowlists', () => {
     internalAdminNote: 'secret note',
     reviewedBy: 'admin',
     reviewedAt: new Date(),
+    revokedAt: new Date(),
+    revokedBy: 'admin',
+    revocationReason: 'public revocation reason',
     createdAt: new Date(),
     updatedAt: new Date(),
   } as never;
@@ -66,7 +69,11 @@ describe('seller onboarding response allowlists', () => {
     const response = sellerUserResponse(seller);
     expect(response).not.toHaveProperty('internalAdminNote');
     expect(response).not.toHaveProperty('reviewedBy');
+    expect(response).not.toHaveProperty('revokedBy');
     expect(response).not.toHaveProperty('user');
+    expect(response).toMatchObject({
+      revocationReason: 'public revocation reason',
+    });
   });
 
   it('never leaks private call data in the user response', () => {
@@ -91,5 +98,9 @@ describe('seller onboarding response allowlists', () => {
       expect(response.user).not.toHaveProperty('nationalId');
       expect(response.user).not.toHaveProperty('role');
     }
+    expect(sellerAdminResponse(seller)).toMatchObject({
+      revokedBy: 'admin',
+      revocationReason: 'public revocation reason',
+    });
   });
 });

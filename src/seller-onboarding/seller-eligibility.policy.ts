@@ -39,6 +39,7 @@ export class SellerEligibilityPolicy {
       userId,
       user,
       manager.getRepository(SellerVerification),
+      true,
     );
   }
 
@@ -65,6 +66,7 @@ export class SellerEligibilityPolicy {
     userId: string,
     user: User | null,
     verifications: Repository<SellerVerification>,
+    lockVerification = false,
   ) {
     if (!user || !user.isActive || !isCustomerRole(user.role)) {
       throw onboardingError(
@@ -90,12 +92,22 @@ export class SellerEligibilityPolicy {
     const verification = await verifications.findOne({
       where: { userId, status: SellerVerificationStatus.APPROVED },
       order: { createdAt: 'DESC' },
+      ...(lockVerification
+        ? { lock: { mode: 'pessimistic_write' as const } }
+        : {}),
     });
     if (!verification) {
       throw onboardingError(
         HttpStatus.FORBIDDEN,
         SellerErrorCode.VERIFICATION_REQUIRED,
         'برای ثبت آگهی فروش پرنده، ابتدا باید احراز فروشندگی شما تأیید شود.',
+      );
+    }
+    if (verification.revokedAt) {
+      throw onboardingError(
+        HttpStatus.FORBIDDEN,
+        SellerErrorCode.ACCESS_REVOKED,
+        'دسترسی ثبت آگهی فروش پرنده برای شما غیرفعال شده است.',
       );
     }
     assertAdultBirthDate(verification.birthDate);

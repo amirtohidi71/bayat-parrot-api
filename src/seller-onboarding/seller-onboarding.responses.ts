@@ -17,6 +17,8 @@ export const sellerUserResponse = (value: SellerVerification) => ({
   consentVersion: value.consentVersion,
   status: value.status,
   rejectionReason: value.rejectionReason,
+  revokedAt: value.revokedAt,
+  revocationReason: value.revocationReason,
   createdAt: value.createdAt,
   updatedAt: value.updatedAt,
 });
@@ -27,6 +29,7 @@ export const sellerAdminResponse = (value: SellerVerification) => ({
   internalAdminNote: value.internalAdminNote,
   reviewedBy: value.reviewedBy,
   reviewedAt: value.reviewedAt,
+  revokedBy: value.revokedBy,
 });
 
 export const breederUserResponse = (value: BreederApplication) => ({
