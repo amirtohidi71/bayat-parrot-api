@@ -1,3 +1,4 @@
+import { Product } from '../products/entities/product.entity';
 import { ParrotSaleListing } from './entities/parrot-sale-listing.entity';
 
 const imageResponse = (value: ParrotSaleListing) =>
@@ -49,18 +50,26 @@ export const parrotSaleListingAdminResponse = (value: ParrotSaleListing) => ({
   reviewedAt: value.reviewedAt,
 });
 
+const productSummaryResponse = (value: Product) => ({
+  id: value.id,
+  sku: value.sku,
+  name: value.name,
+  price: value.price,
+  stock: value.stock,
+  status: value.status,
+  isSellerListing: value.isSellerListing,
+});
+
 const linkedProductResponse = (value: ParrotSaleListing) =>
-  value.product
-    ? {
-        id: value.product.id,
-        sku: value.product.sku,
-        name: value.product.name,
-        price: value.product.price,
-        stock: value.product.stock,
-        status: value.product.status,
-        isSellerListing: value.product.isSellerListing,
-      }
-    : null;
+  value.product ? productSummaryResponse(value.product) : null;
+
+export const parrotSaleListingApprovalResponse = (value: {
+  listing: ParrotSaleListing;
+  product: Product;
+}) => ({
+  listing: parrotSaleListingAdminResponse(value.listing),
+  product: productSummaryResponse(value.product),
+});
 
 export const parrotSaleListingGodAdminDetailResponse = (
   value: ParrotSaleListing,

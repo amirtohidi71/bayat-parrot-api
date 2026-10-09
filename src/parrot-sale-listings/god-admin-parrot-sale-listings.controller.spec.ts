@@ -56,7 +56,7 @@ describe('GodAdminParrotSaleListingsController', () => {
       approval as never,
       listings as never,
     );
-    await controller.approve(
+    const approvalResponse = await controller.approve(
       listing.id,
       { publicPrice: 120 },
       {
@@ -69,6 +69,15 @@ describe('GodAdminParrotSaleListingsController', () => {
     );
     expect(approval.approve).toHaveBeenCalledWith(listing.id, 'owner', {
       publicPrice: 120,
+    });
+    expect(approvalResponse.product).toEqual({
+      id: product.id,
+      sku: product.sku,
+      name: product.name,
+      price: product.price,
+      stock: product.stock,
+      status: product.status,
+      isSellerListing: true,
     });
     await controller.readReviewImage(listing.id, listing.id);
     expect(listings.readReviewImage).toHaveBeenCalledWith(

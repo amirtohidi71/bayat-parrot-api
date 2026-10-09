@@ -20,7 +20,7 @@ import {
 import { ParrotSaleListingStatus } from './entities/parrot-sale-listing.entity';
 import { ParrotSaleListingApprovalService } from './parrot-sale-listing-approval.service';
 import {
-  parrotSaleListingAdminResponse,
+  parrotSaleListingApprovalResponse,
   parrotSaleListingGodAdminDetailResponse,
   parrotSaleListingGodAdminSummaryResponse,
 } from './parrot-sale-listing.responses';
@@ -80,9 +80,6 @@ export class GodAdminParrotSaleListingsController {
       request.godAdmin.username,
       input,
     );
-    return {
-      listing: parrotSaleListingAdminResponse(result.listing),
-      product: result.product,
-    };
+    return parrotSaleListingApprovalResponse(result);
   }
 }

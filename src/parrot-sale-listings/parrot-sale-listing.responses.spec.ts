@@ -6,6 +6,7 @@ import {
   ParrotSaleListingStatus,
 } from './entities/parrot-sale-listing.entity';
 import {
+  parrotSaleListingApprovalResponse,
   parrotSaleListingGodAdminDetailResponse,
   parrotSaleListingGodAdminSummaryResponse,
 } from './parrot-sale-listing.responses';
@@ -104,6 +105,17 @@ describe('Parrot sale listing God Admin response contract', () => {
     ]);
     expect(JSON.stringify(summary)).not.toContain('storageKey');
     expect(JSON.stringify(summary)).not.toContain('internalAdminNote');
+
+    const approval = parrotSaleListingApprovalResponse({
+      listing,
+      product: listing.product,
+    });
+    expect(approval.product).toEqual(response.linkedProduct);
+    expect(JSON.stringify(approval)).not.toContain('storageKey');
+    expect(JSON.stringify(approval)).not.toContain('passwordHash');
+    expect(JSON.stringify(approval)).not.toContain(
+      'not-required-in-review-result',
+    );
   });
 
   it('returns a null linked result before approval', () => {

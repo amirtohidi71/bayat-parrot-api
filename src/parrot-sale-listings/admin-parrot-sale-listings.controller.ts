@@ -14,10 +14,15 @@ import {
 import type { AdminTokenPayload } from '../admin/guards/admin-auth.guard';
 import { AdminAuthGuard } from '../admin/guards/admin-auth.guard';
 import {
+  ApproveParrotSaleListingDto,
   ListParrotSaleListingsDto,
   RejectParrotSaleListingDto,
 } from './dto/parrot-sale-listing.dto';
-import { parrotSaleListingAdminResponse } from './parrot-sale-listing.responses';
+import { ParrotSaleListingApprovalService } from './parrot-sale-listing-approval.service';
+import {
+  parrotSaleListingAdminResponse,
+  parrotSaleListingApprovalResponse,
+} from './parrot-sale-listing.responses';
 import {
   parrotSaleListingPrivateImageResponse,
   PRIVATE_LISTING_IMAGE_CACHE_CONTROL,
@@ -30,7 +35,10 @@ const uuidPipe = new ParseUUIDPipe({ version: '4' });
 @Controller('admin-panel/parrot-sale-listings')
 @UseGuards(AdminAuthGuard)
 export class AdminParrotSaleListingsController {
-  constructor(private readonly listings: ParrotSaleListingsService) {}
+  constructor(
+    private readonly listings: ParrotSaleListingsService,
+    private readonly approval: ParrotSaleListingApprovalService,
+  ) {}
 
   @Get()
   async list(@Query() query: ListParrotSaleListingsDto) {
@@ -64,6 +72,17 @@ export class AdminParrotSaleListingsController {
   ) {
     return parrotSaleListingAdminResponse(
       await this.listings.reject(id, request.admin.username, input),
+    );
+  }
+
+  @Post(':id/approve')
+  async approve(
+    @Param('id', uuidPipe) id: string,
+    @Body() input: ApproveParrotSaleListingDto,
+    @Req() request: AdminRequest,
+  ) {
+    return parrotSaleListingApprovalResponse(
+      await this.approval.approve(id, request.admin.username, input),
     );
   }
 }

@@ -1,4 +1,8 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  BadRequestException,
+  INestApplication,
+  ValidationPipe,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
@@ -6,13 +10,30 @@ import { randomBytes, randomUUID } from 'crypto';
 import type { Server } from 'http';
 import request from 'supertest';
 import { AdminAuthGuard } from '../admin/guards/admin-auth.guard';
+import { Product, ProductStatus } from '../products/entities/product.entity';
 import { UserRole } from '../users/entities/user.entity';
 import { AdminParrotSaleListingsController } from './admin-parrot-sale-listings.controller';
 import {
   ParrotSaleListing,
   ParrotSaleListingStatus,
 } from './entities/parrot-sale-listing.entity';
+import { ParrotSaleListingApprovalService } from './parrot-sale-listing-approval.service';
 import { ParrotSaleListingsService } from './parrot-sale-listings.service';
+
+interface ApprovalHttpResponse {
+  listing: {
+    id: string;
+    status: ParrotSaleListingStatus;
+    approvedPrice: number | null;
+  };
+  product: {
+    sku: string;
+    price: number;
+    stock: number;
+    status: ProductStatus;
+    isSellerListing: boolean;
+  };
+}
 
 describe('AdminParrotSaleListingsController HTTP', () => {
   let app: INestApplication;
@@ -26,6 +47,9 @@ describe('AdminParrotSaleListingsController HTTP', () => {
     getForAdmin: jest.fn(),
     reject: jest.fn(),
     readReviewImage: jest.fn(),
+  };
+  const approval = {
+    approve: jest.fn(),
   };
 
   const row = (status = ParrotSaleListingStatus.PENDING_REVIEW) =>
@@ -90,6 +114,7 @@ describe('AdminParrotSaleListingsController HTTP', () => {
           },
         },
         { provide: ParrotSaleListingsService, useValue: service },
+        { provide: ParrotSaleListingApprovalService, useValue: approval },
       ],
     }).compile();
     app = moduleRef.createNestApplication({ logger: false });
@@ -106,6 +131,25 @@ describe('AdminParrotSaleListingsController HTTP', () => {
     service.listForAdmin.mockResolvedValue([row()]);
     service.getForAdmin.mockResolvedValue(row());
     service.reject.mockResolvedValue(row(ParrotSaleListingStatus.REJECTED));
+    const approvedListing = row(ParrotSaleListingStatus.APPROVED);
+    const product = Object.assign(new Product(), {
+      id: randomUUID(),
+      sku: 'BP-ADMIN-APPROVED',
+      name: approvedListing.name,
+      price: 120,
+      stock: approvedListing.quantity,
+      status: ProductStatus.PUBLISHED,
+      isSellerListing: true,
+      description: 'must-not-leak-through-approval-response',
+    });
+    approvedListing.approvedPrice = product.price;
+    approvedListing.productId = product.id;
+    approvedListing.reviewedBy = adminUsername;
+    approvedListing.reviewedAt = new Date();
+    approval.approve.mockResolvedValue({
+      listing: approvedListing,
+      product,
+    });
     service.readReviewImage.mockResolvedValue({
       buffer: Buffer.from('webp'),
       mimeType: 'image/webp',
@@ -167,6 +211,58 @@ describe('AdminParrotSaleListingsController HTTP', () => {
     });
   });
 
+  it('allows a regular admin to approve and publish a pending listing', async () => {
+    const response = await request(server)
+      .post(`/admin-panel/parrot-sale-listings/${id}/approve`)
+      .set('Authorization', adminBearer())
+      .send({ publicPrice: 120 })
+      .expect(201);
+
+    expect(approval.approve).toHaveBeenCalledWith(id, adminUsername, {
+      publicPrice: 120,
+    });
+    const body = response.body as unknown as ApprovalHttpResponse;
+    expect(body.listing).toMatchObject({
+      id,
+      status: ParrotSaleListingStatus.APPROVED,
+      approvedPrice: 120,
+    });
+    expect(body.product).toEqual({
+      id: expect.any(String) as string,
+      sku: 'BP-ADMIN-APPROVED',
+      name: 'Grey parrot',
+      price: 120,
+      stock: 1,
+      status: ProductStatus.PUBLISHED,
+      isSellerListing: true,
+    });
+    expect(JSON.stringify(body)).not.toContain(
+      'must-not-leak-through-approval-response',
+    );
+  });
+
+  it('returns the stable business error when public price is below requested price', async () => {
+    approval.approve.mockRejectedValueOnce(
+      new BadRequestException({
+        statusCode: 400,
+        code: 'PARROT_SALE_LISTING_PRICE_BELOW_REQUESTED',
+        message: 'Public price must not be lower than requested price.',
+      }),
+    );
+
+    const response = await request(server)
+      .post(`/admin-panel/parrot-sale-listings/${id}/approve`)
+      .set('Authorization', adminBearer())
+      .send({ publicPrice: 99 })
+      .expect(400);
+
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        code: 'PARROT_SALE_LISTING_PRICE_BELOW_REQUESTED',
+      }),
+    );
+  });
+
   it('streams an authenticated review image with private no-store headers', async () => {
     await request(server)
       .get(`/admin-panel/parrot-sale-listings/${id}/images/${id}/content`)
@@ -179,7 +275,7 @@ describe('AdminParrotSaleListingsController HTTP', () => {
     expect(service.readReviewImage).toHaveBeenCalledWith(id, id);
   });
 
-  it('rejects invalid filters, missing rejection reason and absent approval route', async () => {
+  it('rejects invalid filters and a missing rejection reason', async () => {
     const authorization = adminBearer();
     await request(server)
       .get('/admin-panel/parrot-sale-listings?status=INVALID')
@@ -190,10 +286,6 @@ describe('AdminParrotSaleListingsController HTTP', () => {
       .set('Authorization', authorization)
       .send({})
       .expect(400);
-    await request(server)
-      .post(`/admin-panel/parrot-sale-listings/${id}/approve`)
-      .set('Authorization', authorization)
-      .expect(404);
   });
 
   it.each([
@@ -207,9 +299,11 @@ describe('AdminParrotSaleListingsController HTTP', () => {
       { scope: 'god-admin-panel', role: 'owner', username: 'owner-fixture' },
     ],
   ])('rejects %s credentials', async (_kind, payload) => {
-    const call = request(server).get('/admin-panel/parrot-sale-listings');
+    const call = request(server)
+      .post(`/admin-panel/parrot-sale-listings/${id}/approve`)
+      .send({ publicPrice: 120 });
     if (payload) call.set('Authorization', bearer(payload));
     await call.expect(401);
-    expect(service.listForAdmin).not.toHaveBeenCalled();
+    expect(approval.approve).not.toHaveBeenCalled();
   });
 });
