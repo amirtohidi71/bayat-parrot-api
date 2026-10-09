@@ -5,6 +5,7 @@ import {
   SellerListingProductInput,
   SellerListingProductPublisherService,
 } from '../products/seller-listing-product-publisher.service';
+import { ProductsService } from '../products/products.service';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
 import { User, UserRole } from '../users/entities/user.entity';
 import { ParrotSaleListingImage } from './entities/parrot-sale-listing-image.entity';
@@ -60,8 +61,19 @@ function context() {
   });
   const product = Object.assign(new Product(), {
     id: PRODUCT_ID,
+    sku: 'BP140507170001',
+    name: row.name,
+    price: 120,
+    stock: row.quantity,
     status: ProductStatus.PUBLISHED,
     isSellerListing: true,
+    colorVariants: null,
+    tagHealthGuarantee: false,
+    tagFastShipping: false,
+    tagFreeShipping: false,
+    tagCarryCage: false,
+    images: ['/uploads/parrot-sale-listings/public.webp'],
+    boughtTogetherProductIds: [],
   });
   const txListings = {
     findOne: jest.fn(async () => row),
@@ -184,7 +196,17 @@ describe('ParrotSaleListingApprovalService', () => {
       approvedPrice: 120,
       reviewedBy: 'owner',
     });
-    expect(result.product.id).toBe(PRODUCT_ID);
+    expect(result.product).toMatchObject({
+      id: PRODUCT_ID,
+      price: 120,
+      stock: 1,
+      status: ProductStatus.PUBLISHED,
+      isSellerListing: true,
+      tagHealthGuarantee: false,
+      tagFastShipping: false,
+      tagFreeShipping: false,
+      tagCarryCage: false,
+    });
     expect(value.publicImages.remove).not.toHaveBeenCalled();
   });
 
@@ -285,9 +307,62 @@ describe('ProductsService seller-listing product helper', () => {
       stock: 1,
       price: 120,
       isSellerListing: true,
+      colorVariants: null,
+      tagHealthGuarantee: false,
+      tagFastShipping: false,
+      tagFreeShipping: false,
+      tagCarryCage: false,
       images: ['/uploads/parrot-sale-listings/image.webp'],
     });
+    expect(product.stock).toBeGreaterThan(0);
     expect(product).not.toHaveProperty('sellerUserId');
     expect(product).not.toHaveProperty('requestedPrice');
+    expect(product).not.toHaveProperty('internalAdminNote');
+  });
+
+  it('returns every field used by the normal public price and shipping card', async () => {
+    const product = Object.assign(new Product(), {
+      id: PRODUCT_ID,
+      sku: 'BP140507170001',
+      name: 'Bird',
+      price: 120,
+      stock: 1,
+      status: ProductStatus.PUBLISHED,
+      isSellerListing: true,
+      colorVariants: null,
+      tagHealthGuarantee: false,
+      tagFastShipping: false,
+      tagFreeShipping: false,
+      tagCarryCage: false,
+      images: ['/uploads/parrot-sale-listings/image.webp'],
+      boughtTogetherProductIds: [],
+    });
+    const repository = { findOne: jest.fn().mockResolvedValue(product) };
+    const service = new ProductsService(
+      repository as never,
+      {} as never,
+      {} as never,
+    );
+
+    const publicProduct = await service.findOnePublished(PRODUCT_ID);
+
+    expect(publicProduct).toMatchObject({
+      id: PRODUCT_ID,
+      name: 'Bird',
+      price: 120,
+      stock: 1,
+      status: ProductStatus.PUBLISHED,
+      isSellerListing: true,
+      colorVariants: null,
+      tagHealthGuarantee: false,
+      tagFastShipping: false,
+      tagFreeShipping: false,
+      tagCarryCage: false,
+      images: ['/uploads/parrot-sale-listings/image.webp'],
+      boughtTogetherProducts: [],
+    });
+    expect(publicProduct).not.toHaveProperty('sellerUserId');
+    expect(publicProduct).not.toHaveProperty('requestedPrice');
+    expect(publicProduct).not.toHaveProperty('internalAdminNote');
   });
 });
