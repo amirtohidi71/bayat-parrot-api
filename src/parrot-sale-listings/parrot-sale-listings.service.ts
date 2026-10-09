@@ -13,6 +13,7 @@ import {
   ParrotSaleListing,
   ParrotSaleListingStatus,
 } from './entities/parrot-sale-listing.entity';
+import { ParrotSaleListingOptionsService } from './parrot-sale-listing-options.service';
 import { ParrotSaleListingImageStorageService } from './images/parrot-sale-listing-image-storage.service';
 import { PARROT_SALE_LISTING_MAX_IMAGES } from './parrot-sale-listing.constants';
 import {
@@ -31,11 +32,17 @@ export class ParrotSaleListingsService {
     private readonly listings: Repository<ParrotSaleListing>,
     private readonly eligibility: SellerEligibilityPolicy,
     private readonly storage: ParrotSaleListingImageStorageService,
+    private readonly options: ParrotSaleListingOptionsService,
   ) {}
+
+  getOptions() {
+    return this.options.getOptions();
+  }
 
   async create(sellerUserId: string, input: CreateParrotSaleListingDto) {
     await this.eligibility.assertEligibleSeller(sellerUserId);
     return this.dataSource.transaction(async (manager) => {
+      await this.options.assertValidSelection(input, manager);
       const listings = manager.getRepository(ParrotSaleListing);
       const listing = listings.create({
         sellerUserId,
@@ -148,6 +155,14 @@ export class ParrotSaleListingsService {
       const listings = manager.getRepository(ParrotSaleListing);
       const listing = await this.lockedOwned(listings, sellerUserId, id);
       this.assertDraft(listing);
+      await this.options.assertValidSelection(
+        {
+          species: input.species ?? listing.species,
+          subspecies: input.subspecies ?? listing.subspecies,
+          colors: input.colors ?? listing.colors,
+        },
+        manager,
+      );
       this.applyUpdate(listing, input);
       const saved = await listings.save(listing);
       return this.withImages(saved, manager);

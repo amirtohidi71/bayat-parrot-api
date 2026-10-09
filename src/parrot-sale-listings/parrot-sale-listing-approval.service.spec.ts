@@ -199,6 +199,18 @@ describe('ParrotSaleListingApprovalService', () => {
     expect(value.products.create).not.toHaveBeenCalled();
   });
 
+  it('never publishes a private image that fails the safe read validation', async () => {
+    const value = context();
+    value.privateImages.read.mockRejectedValueOnce(
+      new Error('private image validation failed'),
+    );
+    await expect(
+      value.service.approve(LISTING_ID, 'owner', { publicPrice: 120 }),
+    ).rejects.toThrow('private image validation failed');
+    expect(value.publicImages.publish).not.toHaveBeenCalled();
+    expect(value.products.create).not.toHaveBeenCalled();
+  });
+
   it('removes newly published copies when the database transaction fails', async () => {
     const value = context();
     value.txListings.save.mockRejectedValueOnce(

@@ -4,6 +4,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import sharp from 'sharp';
 import { validImage } from '../../bird-passports/images/bird-passport-image.test-fixtures';
+import { BIRD_PASSPORT_IMAGE_MAX_BYTES } from '../../bird-passports/images/bird-passport-image.types';
+import {
+  PRODUCT_IMAGE_ALLOWED_EXTENSIONS,
+  PRODUCT_IMAGE_MAX_BYTES,
+} from '../../products/product-image-policy';
 import { PARROT_SALE_LISTING_MAX_IMAGES } from '../parrot-sale-listing.constants';
 import {
   isAllowedParrotListingPrivateRoot,
@@ -32,11 +37,45 @@ describe('ParrotSaleListingImageStorageService', () => {
     await rm(temporaryParent, { recursive: true, force: true });
   });
 
-  it('uses memory upload with the eight-image request cap', () => {
+  it('uses the exact product image size policy with the eight-image cap', () => {
+    expect(parrotSaleListingImageUploadOptions.limits.fileSize).toBe(
+      PRODUCT_IMAGE_MAX_BYTES,
+    );
+    expect(BIRD_PASSPORT_IMAGE_MAX_BYTES).toBe(PRODUCT_IMAGE_MAX_BYTES);
     expect(parrotSaleListingImageUploadOptions.limits.files).toBe(
       PARROT_SALE_LISTING_MAX_IMAGES,
     );
     expect(parrotSaleListingImageUploadOptions.storage).toBeDefined();
+  });
+
+  it.each([
+    ['image.jpg', true],
+    ['image.jpeg', true],
+    ['image.png', true],
+    ['image.webp', true],
+    ['image.JPG', true],
+    ['image.gif', false],
+    ['image.svg', false],
+  ])('applies the product extension policy to %s', (originalname, accepted) => {
+    const callback = jest.fn();
+    parrotSaleListingImageUploadOptions.fileFilter(
+      undefined,
+      { originalname } as Express.Multer.File,
+      callback,
+    );
+    if (accepted) expect(callback).toHaveBeenCalledWith(null, true);
+    else {
+      expect(callback).toHaveBeenCalledWith(
+        expect.any(BadRequestException),
+        false,
+      );
+    }
+    expect(PRODUCT_IMAGE_ALLOWED_EXTENSIONS).toEqual([
+      '.jpg',
+      '.jpeg',
+      '.png',
+      '.webp',
+    ]);
   });
 
   it('decodes and normalizes a valid upload to a private WebP file', async () => {

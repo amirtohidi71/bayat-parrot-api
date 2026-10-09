@@ -13,6 +13,7 @@ import {
 } from './images/parrot-sale-listing-public-image.service';
 import { GodAdminParrotSaleListingsController } from './god-admin-parrot-sale-listings.controller';
 import { ParrotSaleListingApprovalService } from './parrot-sale-listing-approval.service';
+import { ParrotSaleListingOptionsService } from './parrot-sale-listing-options.service';
 import { ParrotSaleListingsController } from './parrot-sale-listings.controller';
 import { ParrotSaleListingsService } from './parrot-sale-listings.service';
 
@@ -30,6 +31,7 @@ import { ParrotSaleListingsService } from './parrot-sale-listings.service';
   ],
   providers: [
     ParrotSaleListingsService,
+    ParrotSaleListingOptionsService,
     ParrotSaleListingApprovalService,
     ParrotSaleListingImageStorageService,
     ParrotSaleListingPublicImageService,

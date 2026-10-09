@@ -120,11 +120,16 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     }),
     delete: jest.fn().mockResolvedValue(undefined),
   };
+  const options = {
+    getOptions: jest.fn().mockResolvedValue({}),
+    assertValidSelection: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new ParrotSaleListingsService(
     dataSource as never,
     globalListings as never,
     eligibility as unknown as SellerEligibilityPolicy,
     storage as never,
+    options as never,
   );
   return {
     service,
@@ -137,6 +142,7 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     dataSource,
     eligibility,
     storage,
+    options,
   };
 }
 
@@ -177,7 +183,36 @@ describe('ParrotSaleListingsService customer workflow', () => {
         reviewedBy: null,
       }),
     );
+    expect(value.options.assertValidSelection).toHaveBeenCalledWith(
+      expect.objectContaining({ species: 'Grey' }),
+      value.manager,
+    );
     expect(result.images).toEqual([]);
+  });
+
+  it('does not create a listing when a real product option is invalid', async () => {
+    const value = context();
+    value.options.assertValidSelection.mockRejectedValueOnce(
+      new HttpException(
+        {
+          statusCode: 400,
+          code: ParrotSaleListingErrorCode.INVALID_OPTION,
+          message: 'Invalid parrot sale listing species option',
+        },
+        400,
+      ),
+    );
+    await expectCode(
+      value.service.create(SELLER_ID, {
+        name: 'Bird',
+        species: 'guessed-species',
+        requestedPrice: 100,
+      }),
+      400,
+      ParrotSaleListingErrorCode.INVALID_OPTION,
+    );
+    expect(value.txListings.create).not.toHaveBeenCalled();
+    expect(value.txListings.save).not.toHaveBeenCalled();
   });
 
   it('scopes list and detail reads to the authenticated seller', async () => {
@@ -220,6 +255,27 @@ describe('ParrotSaleListingsService customer workflow', () => {
       lock: { mode: 'pessimistic_write' },
     });
     expect(result).toMatchObject({ name: 'Updated', quantity: 100 });
+  });
+
+  it('validates the effective species, subspecies and colors before update', async () => {
+    const value = context();
+    value.row.species = 'african-grey';
+    value.row.subspecies = 'red-tail';
+    value.row.colors = ['gray'];
+    await value.service.update(SELLER_ID, LISTING_ID, {
+      colors: ['silver'],
+    });
+    expect(value.options.assertValidSelection).toHaveBeenCalledWith(
+      {
+        species: 'african-grey',
+        subspecies: 'red-tail',
+        colors: ['silver'],
+      },
+      value.manager,
+    );
+    expect(
+      value.options.assertValidSelection.mock.invocationCallOrder[0],
+    ).toBeLessThan(value.txListings.save.mock.invocationCallOrder[0]);
   });
 
   it.each([

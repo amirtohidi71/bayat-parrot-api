@@ -56,6 +56,11 @@ export class ParrotSaleListingsController {
     );
   }
 
+  @Get('options')
+  getOptions() {
+    return this.listings.getOptions();
+  }
+
   @Get(':id')
   async getOwn(
     @CurrentUser() user: AuthenticatedUser,

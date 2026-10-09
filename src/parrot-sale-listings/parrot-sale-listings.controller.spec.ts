@@ -52,6 +52,11 @@ describe('ParrotSaleListingsController customer routes', () => {
     addImage: jest.fn().mockImplementation(() => Promise.resolve(listing())),
     deleteImage: jest.fn().mockImplementation(() => Promise.resolve(listing())),
     submit: jest.fn().mockImplementation(() => Promise.resolve(listing())),
+    getOptions: jest.fn().mockResolvedValue({
+      species: ['african-grey'],
+      subspeciesBySpecies: { 'african-grey': ['red-tail'] },
+      colors: ['gray'],
+    }),
     readOwnImage: jest.fn().mockResolvedValue({
       buffer: Buffer.from('webp'),
       mimeType: 'image/webp',
@@ -72,6 +77,7 @@ describe('ParrotSaleListingsController customer routes', () => {
     ).toEqual([JwtAuthGuard, CustomerCapabilityGuard]);
     expect(route('create')).toEqual(['/', RequestMethod.POST]);
     expect(route('listOwn')).toEqual(['/', RequestMethod.GET]);
+    expect(route('getOptions')).toEqual(['options', RequestMethod.GET]);
     expect(route('getOwn')).toEqual([':id', RequestMethod.GET]);
     expect(route('readOwnImage')).toEqual([
       ':id/images/:imageId/content',
@@ -102,6 +108,15 @@ describe('ParrotSaleListingsController customer routes', () => {
     expect(response).not.toHaveProperty('internalAdminNote');
     expect(response).not.toHaveProperty('reviewedBy');
     expect(response).not.toHaveProperty('reviewedAt');
+  });
+
+  it('returns customer-safe options from the server-authoritative service', async () => {
+    await expect(controller.getOptions()).resolves.toEqual({
+      species: ['african-grey'],
+      subspeciesBySpecies: { 'african-grey': ['red-tail'] },
+      colors: ['gray'],
+    });
+    expect(service.getOptions).toHaveBeenCalledTimes(1);
   });
 
   it('passes ownership identity through detail, update, image and submit actions', async () => {
