@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsNumber,
   IsOptional,
@@ -55,6 +56,16 @@ const strictMoney = ({ value }: { value: unknown }): unknown => {
   return /^\d+(?:\.\d{1,2})?$/.test(normalized) ? Number(normalized) : value;
 };
 
+export const PARROT_SALE_LISTING_PAIR_GENDER = 'pair' as const;
+export type ParrotSaleListingGenderInput =
+  | ProductGender
+  | typeof PARROT_SALE_LISTING_PAIR_GENDER;
+
+const PARROT_SALE_LISTING_GENDER_INPUTS = [
+  ...Object.values(ProductGender),
+  PARROT_SALE_LISTING_PAIR_GENDER,
+] as const;
+
 export class ListParrotSaleListingsDto {
   @IsOptional()
   @IsEnum(ParrotSaleListingStatus)
@@ -85,8 +96,8 @@ export class CreateParrotSaleListingDto {
   subspecies?: string;
 
   @IsOptional()
-  @IsEnum(ProductGender)
-  gender?: ProductGender;
+  @IsIn(PARROT_SALE_LISTING_GENDER_INPUTS)
+  gender?: ParrotSaleListingGenderInput;
 
   @IsOptional()
   @IsEnum(ProductAgeStage)
@@ -151,8 +162,8 @@ export class UpdateParrotSaleListingDto {
   subspecies?: string;
 
   @IsOptional()
-  @IsEnum(ProductGender)
-  gender?: ProductGender;
+  @IsIn(PARROT_SALE_LISTING_GENDER_INPUTS)
+  gender?: ParrotSaleListingGenderInput;
 
   @IsOptional()
   @IsEnum(ProductAgeStage)

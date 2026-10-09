@@ -95,7 +95,7 @@ export class SellerEligibilityPolicy {
       throw onboardingError(
         HttpStatus.FORBIDDEN,
         SellerErrorCode.VERIFICATION_REQUIRED,
-        'احراز فروشندگی باید توسط ادمین تأیید شود.',
+        'برای ثبت آگهی فروش پرنده، ابتدا باید احراز فروشندگی شما تأیید شود.',
       );
     }
     assertAdultBirthDate(verification.birthDate);

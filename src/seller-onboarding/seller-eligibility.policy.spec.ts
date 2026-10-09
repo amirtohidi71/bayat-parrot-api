@@ -90,6 +90,22 @@ describe('SellerEligibilityPolicy role separation', () => {
     },
   );
 
+  it('returns the stable seller-verification-required response for listing flows', async () => {
+    const value = setup(UserRole.CUSTOMER);
+    value.verifications.findOne.mockResolvedValueOnce(null);
+
+    await expect(
+      value.policy.assertEligibleSeller(value.user.id),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: {
+        code: SellerErrorCode.VERIFICATION_REQUIRED,
+        message:
+          'برای ثبت آگهی فروش پرنده، ابتدا باید احراز فروشندگی شما تأیید شود.',
+      },
+    });
+  });
+
   it('allows an eligible CUSTOMER to enter breeder promotion', async () => {
     const value = setup(UserRole.CUSTOMER);
 

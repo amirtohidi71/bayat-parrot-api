@@ -5,6 +5,7 @@ import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility
 import { User } from '../users/entities/user.entity';
 import {
   CreateParrotSaleListingDto,
+  PARROT_SALE_LISTING_PAIR_GENDER,
   RejectParrotSaleListingDto,
   UpdateParrotSaleListingDto,
 } from './dto/parrot-sale-listing.dto';
@@ -51,10 +52,16 @@ export class ParrotSaleListingsService {
         description: input.description ?? null,
         species: input.species,
         subspecies: input.subspecies ?? null,
-        gender: input.gender ?? null,
+        gender:
+          input.gender === PARROT_SALE_LISTING_PAIR_GENDER
+            ? null
+            : (input.gender ?? null),
         ageStage: input.ageStage ?? null,
         colors: input.colors ?? null,
-        tagPair: input.tagPair ?? false,
+        tagPair:
+          input.gender === PARROT_SALE_LISTING_PAIR_GENDER
+            ? true
+            : (input.tagPair ?? false),
         tagHandTame: input.tagHandTame ?? false,
         requestedPrice: input.requestedPrice,
         approvedPrice: null,
@@ -155,6 +162,10 @@ export class ParrotSaleListingsService {
       const listings = manager.getRepository(ParrotSaleListing);
       const listing = await this.lockedOwned(listings, sellerUserId, id);
       this.assertDraft(listing);
+      await this.eligibility.assertEligibleSellerInTransaction(
+        sellerUserId,
+        manager,
+      );
       await this.options.assertValidSelection(
         {
           species: input.species ?? listing.species,
@@ -355,10 +366,15 @@ export class ParrotSaleListingsService {
       listing.description = input.description;
     if (input.species !== undefined) listing.species = input.species;
     if (input.subspecies !== undefined) listing.subspecies = input.subspecies;
-    if (input.gender !== undefined) listing.gender = input.gender;
+    if (input.gender !== undefined) {
+      listing.gender =
+        input.gender === PARROT_SALE_LISTING_PAIR_GENDER ? null : input.gender;
+    }
     if (input.ageStage !== undefined) listing.ageStage = input.ageStage;
     if (input.colors !== undefined) listing.colors = input.colors;
     if (input.tagPair !== undefined) listing.tagPair = input.tagPair;
+    if (input.gender === PARROT_SALE_LISTING_PAIR_GENDER)
+      listing.tagPair = true;
     if (input.tagHandTame !== undefined)
       listing.tagHandTame = input.tagHandTame;
     if (input.requestedPrice !== undefined)

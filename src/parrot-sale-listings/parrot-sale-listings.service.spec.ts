@@ -2,6 +2,7 @@
 import { HttpException } from '@nestjs/common';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
 import { User, UserRole } from '../users/entities/user.entity';
+import { PARROT_SALE_LISTING_PAIR_GENDER } from './dto/parrot-sale-listing.dto';
 import { ParrotSaleListingImage } from './entities/parrot-sale-listing-image.entity';
 import {
   ParrotSaleListing,
@@ -190,6 +191,20 @@ describe('ParrotSaleListingsService customer workflow', () => {
     expect(result.images).toEqual([]);
   });
 
+  it('stores a pair selection through tagPair without changing the database gender enum', async () => {
+    const value = context();
+    await value.service.create(SELLER_ID, {
+      name: 'Pair',
+      species: 'Grey',
+      gender: PARROT_SALE_LISTING_PAIR_GENDER,
+      tagPair: false,
+      requestedPrice: 100,
+    });
+    expect(value.txListings.create).toHaveBeenCalledWith(
+      expect.objectContaining({ gender: null, tagPair: true }),
+    );
+  });
+
   it('does not create a listing when a real product option is invalid', async () => {
     const value = context();
     value.options.assertValidSelection.mockRejectedValueOnce(
@@ -254,7 +269,19 @@ describe('ParrotSaleListingsService customer workflow', () => {
       where: { id: LISTING_ID, sellerUserId: SELLER_ID },
       lock: { mode: 'pessimistic_write' },
     });
+    expect(
+      value.eligibility.assertEligibleSellerInTransaction,
+    ).toHaveBeenCalledWith(SELLER_ID, value.manager);
     expect(result).toMatchObject({ name: 'Updated', quantity: 100 });
+  });
+
+  it('maps a pair update to tagPair after the eligibility recheck', async () => {
+    const value = context();
+    await value.service.update(SELLER_ID, LISTING_ID, {
+      gender: PARROT_SALE_LISTING_PAIR_GENDER,
+      tagPair: false,
+    });
+    expect(value.row).toMatchObject({ gender: null, tagPair: true });
   });
 
   it('validates the effective species, subspecies and colors before update', async () => {

@@ -14,7 +14,9 @@ import {
 import {
   ApproveParrotSaleListingDto,
   CreateParrotSaleListingDto,
+  PARROT_SALE_LISTING_PAIR_GENDER,
   RejectParrotSaleListingDto,
+  UpdateParrotSaleListingDto,
 } from './dto/parrot-sale-listing.dto';
 import { ParrotSaleListingImage } from './entities/parrot-sale-listing-image.entity';
 import {
@@ -139,6 +141,20 @@ describe('parrot sale listing schema and DTO contracts', () => {
         reviewedBy: 'admin',
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('accepts pair as a listing-only gender selection', async () => {
+    await expect(
+      transform(CreateParrotSaleListingDto, {
+        ...validCreate(),
+        gender: PARROT_SALE_LISTING_PAIR_GENDER,
+      }),
+    ).resolves.toMatchObject({ gender: PARROT_SALE_LISTING_PAIR_GENDER });
+    await expect(
+      transform(UpdateParrotSaleListingDto, {
+        gender: PARROT_SALE_LISTING_PAIR_GENDER,
+      }),
+    ).resolves.toMatchObject({ gender: PARROT_SALE_LISTING_PAIR_GENDER });
   });
 
   it.each([
