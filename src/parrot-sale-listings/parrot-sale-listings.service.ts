@@ -312,7 +312,7 @@ export class ParrotSaleListingsService {
           ParrotSaleListingErrorCode.ALREADY_DELETED,
           'Parrot sale listing is already deleted by the seller',
         );
-      await this.unpublishLinkedProduct(listing, manager);
+      await this.unpublishLinkedProduct(listing, manager, true);
       listing.status = ParrotSaleListingStatus.DELETED_BY_USER;
       const saved = await listings.save(listing);
       return this.withImages(saved, manager);
@@ -469,6 +469,7 @@ export class ParrotSaleListingsService {
   private async unpublishLinkedProduct(
     listing: ParrotSaleListing,
     manager: EntityManager,
+    tolerateMissing = false,
   ): Promise<void> {
     if (!listing.productId) return;
     const products = manager.getRepository(Product);
@@ -476,7 +477,15 @@ export class ParrotSaleListingsService {
       where: { id: listing.productId },
       lock: { mode: 'pessimistic_write' },
     });
-    if (!product?.isSellerListing)
+    if (!product) {
+      if (tolerateMissing) return;
+      throw parrotSaleListingError(
+        HttpStatus.CONFLICT,
+        ParrotSaleListingErrorCode.PUBLICATION_CONFLICT,
+        'Linked seller listing product is unavailable',
+      );
+    }
+    if (!product.isSellerListing)
       throw parrotSaleListingError(
         HttpStatus.CONFLICT,
         ParrotSaleListingErrorCode.PUBLICATION_CONFLICT,

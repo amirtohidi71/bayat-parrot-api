@@ -650,6 +650,46 @@ describe('ParrotSaleListingsService customer workflow', () => {
     await value.service.delete(SELLER_ID, LISTING_ID);
     expect(value.row.status).toBe(ParrotSaleListingStatus.DELETED_BY_USER);
     expect(value.product.status).toBe(ProductStatus.DRAFT);
+    expect(value.txProducts.save).toHaveBeenCalledWith(value.product);
+  });
+
+  it('soft-deletes an approved listing when its linked Product is missing', async () => {
+    const value = context(ParrotSaleListingStatus.APPROVED);
+    value.txProducts.findOne.mockResolvedValueOnce(null);
+
+    await expect(
+      value.service.delete(SELLER_ID, LISTING_ID),
+    ).resolves.toMatchObject({
+      status: ParrotSaleListingStatus.DELETED_BY_USER,
+      productId: value.product.id,
+    });
+    expect(value.txProducts.save).not.toHaveBeenCalled();
+    expect(value.txListings.save).toHaveBeenCalledWith(value.row);
+  });
+
+  it('soft-deletes an approved listing whose linked Product is already not public', async () => {
+    const value = context(ParrotSaleListingStatus.APPROVED);
+    value.product.status = ProductStatus.DRAFT;
+
+    await expect(
+      value.service.delete(SELLER_ID, LISTING_ID),
+    ).resolves.toMatchObject({
+      status: ParrotSaleListingStatus.DELETED_BY_USER,
+    });
+    expect(value.product.status).toBe(ProductStatus.DRAFT);
+  });
+
+  it('does not let a non-owner delete a listing', async () => {
+    const value = context(ParrotSaleListingStatus.APPROVED);
+    value.txListings.findOne.mockResolvedValueOnce(null);
+
+    await expectCode(
+      value.service.delete('another-seller', LISTING_ID),
+      404,
+      ParrotSaleListingErrorCode.NOT_FOUND,
+    );
+    expect(value.txProducts.findOne).not.toHaveBeenCalled();
+    expect(value.txListings.save).not.toHaveBeenCalled();
   });
 
   it('soft-deletes a re-review listing while retaining its linked Product audit reference', async () => {
