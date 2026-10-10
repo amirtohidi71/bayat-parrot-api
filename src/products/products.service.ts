@@ -789,14 +789,16 @@ export class ProductsService {
       : undefined;
 
     return this.productsRepository.find({
-      where: normalizedStatus ? { status: normalizedStatus } : {},
+      where: normalizedStatus
+        ? { status: normalizedStatus, isSellerListing: false }
+        : { isSellerListing: false },
       order: { createdAt: 'DESC' },
     });
   }
 
   findPending(): Promise<Product[]> {
     return this.productsRepository.find({
-      where: { status: ProductStatus.PENDING },
+      where: { status: ProductStatus.PENDING, isSellerListing: false },
       order: { createdAt: 'DESC' },
     });
   }

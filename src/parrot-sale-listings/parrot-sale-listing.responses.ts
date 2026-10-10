@@ -1,5 +1,8 @@
 import { Product } from '../products/entities/product.entity';
-import { ParrotSaleListing } from './entities/parrot-sale-listing.entity';
+import {
+  ParrotSaleListing,
+  ParrotSaleListingStatus,
+} from './entities/parrot-sale-listing.entity';
 
 const imageResponse = (value: ParrotSaleListing) =>
   [...(value.images ?? [])]
@@ -34,6 +37,9 @@ export const parrotSaleListingSellerResponse = (value: ParrotSaleListing) => ({
 
 export const parrotSaleListingAdminResponse = (value: ParrotSaleListing) => ({
   ...candidateResponse(value),
+  needsReReview:
+    value.status === ParrotSaleListingStatus.PENDING_REVIEW &&
+    value.productId !== null,
   sellerUserId: value.sellerUserId,
   seller: {
     id: value.seller.id,

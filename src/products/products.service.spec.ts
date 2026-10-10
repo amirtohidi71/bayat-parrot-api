@@ -649,6 +649,74 @@ describe('ProductsService public category filters', () => {
   });
 });
 
+describe('ProductsService admin product separation', () => {
+  it('excludes seller-listing products from the default and filtered admin lists', async () => {
+    const repository = { find: jest.fn().mockResolvedValue([]) };
+    const service = new ProductsService(
+      repository as never,
+      {} as never,
+      {} as never,
+    );
+
+    await service.findAllForAdmin();
+    await service.findAllForAdmin(ProductStatus.PUBLISHED);
+
+    expect(repository.find).toHaveBeenNthCalledWith(1, {
+      where: { isSellerListing: false },
+      order: { createdAt: 'DESC' },
+    });
+    expect(repository.find).toHaveBeenNthCalledWith(2, {
+      where: {
+        status: ProductStatus.PUBLISHED,
+        isSellerListing: false,
+      },
+      order: { createdAt: 'DESC' },
+    });
+  });
+
+  it('excludes seller-listing products from the pending admin queue', async () => {
+    const repository = { find: jest.fn().mockResolvedValue([]) };
+    const service = new ProductsService(
+      repository as never,
+      {} as never,
+      {} as never,
+    );
+
+    await service.findPending();
+
+    expect(repository.find).toHaveBeenCalledWith({
+      where: {
+        status: ProductStatus.PENDING,
+        isSellerListing: false,
+      },
+      order: { createdAt: 'DESC' },
+    });
+  });
+
+  it('keeps published seller-listing products available to the public detail flow', async () => {
+    const product = existingProduct({
+      status: ProductStatus.PUBLISHED,
+      isSellerListing: true,
+      boughtTogetherProductIds: [],
+    });
+    const repository = {
+      findOne: jest.fn().mockResolvedValue(product),
+      find: jest.fn().mockResolvedValue([]),
+    };
+    const service = new ProductsService(
+      repository as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(service.findOnePublished(product.id)).resolves.toMatchObject({
+      id: product.id,
+      status: ProductStatus.PUBLISHED,
+      isSellerListing: true,
+    });
+  });
+});
+
 function createDto(
   overrides: Partial<CreateProductDto> = {},
 ): CreateProductDto {

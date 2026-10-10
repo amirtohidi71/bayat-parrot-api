@@ -154,6 +154,7 @@ function context() {
     privateImages,
     publicImages,
     products,
+    product,
     getCapturedProductInput: () => capturedProductInput,
   };
 }
@@ -219,6 +220,7 @@ describe('ParrotSaleListingApprovalService', () => {
       tagFastShipping: false,
       tagFreeShipping: false,
       tagCarryCage: false,
+      images: ['/uploads/parrot-sale-listings/public.webp'],
     });
     expect(value.publicImages.remove).not.toHaveBeenCalled();
   });
@@ -266,6 +268,21 @@ describe('ParrotSaleListingApprovalService', () => {
     await expect(
       value.service.approve(LISTING_ID, 'owner', { publicPrice: 120 }),
     ).rejects.toThrow('transaction failed');
+    expect(value.publicImages.remove).toHaveBeenCalledWith([
+      '/uploads/parrot-sale-listings/public.webp',
+    ]);
+  });
+
+  it('rolls back publication when the linked Product drops the published listing image', async () => {
+    const value = context();
+    value.products.create.mockResolvedValueOnce(
+      Object.assign(value.product, { images: [] }),
+    );
+
+    await expect(
+      value.service.approve(LISTING_ID, 'owner', { publicPrice: 120 }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(value.txListings.save).not.toHaveBeenCalled();
     expect(value.publicImages.remove).toHaveBeenCalledWith([
       '/uploads/parrot-sale-listings/public.webp',
     ]);

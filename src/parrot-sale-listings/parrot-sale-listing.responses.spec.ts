@@ -66,6 +66,7 @@ describe('Parrot sale listing God Admin response contract', () => {
     });
 
     const response = parrotSaleListingGodAdminDetailResponse(listing);
+    expect(response.needsReReview).toBe(false);
     expect(response.images).toEqual([
       { id: '423e4567-e89b-42d3-a456-426614174000', position: 0 },
     ]);
@@ -134,5 +135,26 @@ describe('Parrot sale listing God Admin response contract', () => {
     expect(
       parrotSaleListingGodAdminDetailResponse(listing).linkedProduct,
     ).toBeNull();
+  });
+
+  it('marks a linked pending listing as edited after approval', () => {
+    const listing = Object.assign(new ParrotSaleListing(), {
+      status: ParrotSaleListingStatus.PENDING_REVIEW,
+      productId: '323e4567-e89b-42d3-a456-426614174000',
+      sellerUserId: '123e4567-e89b-42d3-a456-426614174000',
+      seller: {
+        id: '123e4567-e89b-42d3-a456-426614174000',
+        phone: '09120000000',
+        firstName: null,
+        lastName: null,
+        role: UserRole.CUSTOMER,
+        profileCompleted: true,
+      },
+      images: [],
+    });
+
+    expect(parrotSaleListingGodAdminDetailResponse(listing).needsReReview).toBe(
+      true,
+    );
   });
 });

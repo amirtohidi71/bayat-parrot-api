@@ -128,6 +128,15 @@ export class ParrotSaleListingApprovalService {
             };
         const product = publication.product;
         replacedPaths = publication.replacedImages;
+        if (
+          product.images?.length !== publishedPaths.length ||
+          product.images.some((path, index) => path !== publishedPaths[index])
+        )
+          throw parrotSaleListingError(
+            HttpStatus.CONFLICT,
+            ParrotSaleListingErrorCode.PUBLICATION_CONFLICT,
+            'Published seller listing product images are unavailable',
+          );
 
         listing.status = ParrotSaleListingStatus.APPROVED;
         listing.productId = product.id;

@@ -1,6 +1,12 @@
+import { INestApplication } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { Test } from '@nestjs/testing';
 import { mkdtemp, readFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import request from 'supertest';
+import { validImage } from '../../bird-passports/images/bird-passport-image.test-fixtures';
+import { configurePublicUploadsStatic } from '../../common/public-uploads-static';
 import { ParrotSaleListingPublicImageService } from './parrot-sale-listing-public-image.service';
 
 describe('ParrotSaleListingPublicImageService', () => {
@@ -27,6 +33,29 @@ describe('ParrotSaleListingPublicImageService', () => {
         join(root, ...publicPath.replace('/uploads/', '').split('/')),
       ),
     ).toEqual(bytes);
+  });
+
+  it('serves the returned Product image path from the shared public uploads root', async () => {
+    const image = await validImage('webp');
+    const [publicPath] = await service.publish([image]);
+    const moduleRef = await Test.createTestingModule({}).compile();
+    const expressApp = moduleRef.createNestApplication<NestExpressApplication>({
+      logger: false,
+    });
+    configurePublicUploadsStatic(expressApp, root);
+    await expressApp.init();
+    const app: INestApplication = expressApp;
+    const server = app.getHttpServer() as unknown as Parameters<
+      typeof request
+    >[0];
+
+    try {
+      const response = await request(server).get(publicPath).expect(200);
+      expect(response.headers['content-type']).toMatch(/^image\/webp\b/);
+      expect(response.body).toEqual(image);
+    } finally {
+      await app.close();
+    }
   });
 
   it('removes only paths issued from the dedicated namespace', async () => {
