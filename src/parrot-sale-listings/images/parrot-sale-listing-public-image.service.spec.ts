@@ -6,8 +6,14 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import request from 'supertest';
 import { validImage } from '../../bird-passports/images/bird-passport-image.test-fixtures';
-import { configurePublicUploadsStatic } from '../../common/public-uploads-static';
-import { ParrotSaleListingPublicImageService } from './parrot-sale-listing-public-image.service';
+import {
+  configurePublicUploadsStatic,
+  PUBLIC_UPLOADS_ROOT,
+} from '../../common/public-uploads-static';
+import {
+  parrotSaleListingPublicUploadsProvider,
+  ParrotSaleListingPublicImageService,
+} from './parrot-sale-listing-public-image.service';
 
 describe('ParrotSaleListingPublicImageService', () => {
   let root: string;
@@ -33,6 +39,12 @@ describe('ParrotSaleListingPublicImageService', () => {
         join(root, ...publicPath.replace('/uploads/', '').split('/')),
       ),
     ).toEqual(bytes);
+  });
+
+  it('uses the same central root as public static delivery', () => {
+    expect(parrotSaleListingPublicUploadsProvider.useValue).toBe(
+      PUBLIC_UPLOADS_ROOT,
+    );
   });
 
   it('serves the returned Product image path from the shared public uploads root', async () => {

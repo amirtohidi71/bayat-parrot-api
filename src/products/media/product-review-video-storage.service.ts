@@ -13,6 +13,7 @@ import {
   sanitizeProductReviewVideoCover,
   validateProductReviewMp4,
 } from './product-review-video-validator';
+import { PUBLIC_UPLOADS_ROOT } from '../../common/public-uploads-static';
 
 const VIDEO_KEY_PATTERN =
   /^product-review-videos\/videos\/[0-9a-f-]{36}\.mp4$/i;
@@ -45,9 +46,7 @@ export class ProductReviewVideoStorageService {
     @Inject(PRODUCT_REVIEW_VIDEO_UPLOAD_ROOT)
     uploadRoot?: string,
   ) {
-    this.uploadRoot = resolve(
-      uploadRoot ?? resolve(process.cwd(), 'public', 'uploads'),
-    );
+    this.uploadRoot = resolve(uploadRoot ?? PUBLIC_UPLOADS_ROOT);
     this.videoDirectory = resolve(
       this.uploadRoot,
       'product-review-videos',

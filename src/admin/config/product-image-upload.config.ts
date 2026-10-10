@@ -1,13 +1,14 @@
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { diskStorage } from 'multer';
-import { extname, join } from 'path';
+import { extname } from 'path';
 import {
   PRODUCT_IMAGE_MAX_BYTES,
   productImageFileFilter,
 } from '../../products/product-image-policy';
+import { PUBLIC_UPLOADS_ROOT } from '../../common/public-uploads-static';
 
-export const PRODUCT_IMAGES_DIR = join(process.cwd(), 'public', 'uploads');
+export const PRODUCT_IMAGES_DIR = PUBLIC_UPLOADS_ROOT;
 
 export const productImageUploadOptions = {
   storage: diskStorage({
