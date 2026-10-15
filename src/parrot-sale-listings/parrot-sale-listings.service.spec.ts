@@ -2,6 +2,7 @@
 import { HttpException } from '@nestjs/common';
 import { Product, ProductStatus } from '../products/entities/product.entity';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
+import { BreederApplication } from '../seller-onboarding/entities/breeder-application.entity';
 import { User, UserRole } from '../users/entities/user.entity';
 import { PARROT_SALE_LISTING_PAIR_GENDER } from './dto/parrot-sale-listing.dto';
 import { ParrotSaleListingImage } from './entities/parrot-sale-listing-image.entity';
@@ -85,6 +86,7 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
   };
   const txListings = {
     findOne: jest.fn().mockResolvedValue(row),
+    count: jest.fn().mockResolvedValue(0),
     create: jest.fn((value: Partial<ParrotSaleListing>) =>
       Object.assign(listing(), value),
     ),
@@ -103,6 +105,9 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
   const txUsers = {
     findOne: jest.fn().mockResolvedValue(seller),
   };
+  const txBreeders = {
+    exists: jest.fn().mockResolvedValue(false),
+  };
   const txProducts = {
     findOne: jest.fn().mockResolvedValue(product),
     save: jest.fn(async (value: Product | Product[]) => value),
@@ -112,9 +117,16 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
       if (target === ParrotSaleListing) return txListings;
       if (target === ParrotSaleListingImage) return txImages;
       if (target === User) return txUsers;
+      if (target === BreederApplication) return txBreeders;
       if (target === Product) return txProducts;
       throw new Error('Unexpected repository');
     }),
+    query: jest.fn().mockResolvedValue([
+      {
+        weekStart: new Date('2026-10-09T20:30:00Z'),
+        weekEnd: new Date('2026-10-16T20:30:00Z'),
+      },
+    ]),
   };
   const dataSource = {
     getRepository: jest.fn((target: unknown) => {
@@ -157,6 +169,7 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     txListings,
     txImages,
     txUsers,
+    txBreeders,
     txProducts,
     product,
     manager,
@@ -209,6 +222,94 @@ describe('ParrotSaleListingsService customer workflow', () => {
       value.manager,
     );
     expect(result.images).toEqual([]);
+    expect(value.txUsers.findOne).toHaveBeenCalledWith({
+      where: { id: SELLER_ID },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(value.txUsers.findOne.mock.invocationCallOrder[0]).toBeLessThan(
+      value.txListings.count.mock.invocationCallOrder[0],
+    );
+    expect(value.txListings.count.mock.invocationCallOrder[0]).toBeLessThan(
+      value.txListings.save.mock.invocationCallOrder[0],
+    );
+    const countCalls = value.txListings.count.mock.calls as unknown as Array<
+      [{ where: { sellerUserId: string; createdAt: unknown } }]
+    >;
+    expect(countCalls[0]?.[0].where.sellerUserId).toBe(SELLER_ID);
+    expect(countCalls[0]?.[0].where.createdAt).toBeDefined();
+    expect(value.manager.query).toHaveBeenCalledWith(
+      expect.stringContaining("AT TIME ZONE 'Asia/Tehran'"),
+      [null],
+    );
+  });
+
+  it('allows the second customer listing but rejects the third with a stable 409', async () => {
+    const value = context();
+    value.txListings.count.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+    const input = { name: 'Bird', species: 'Grey', requestedPrice: 100 };
+
+    await expect(value.service.create(SELLER_ID, input)).resolves.toBeDefined();
+    await expectCode(
+      value.service.create(SELLER_ID, input),
+      409,
+      ParrotSaleListingErrorCode.WEEKLY_LIMIT_REACHED,
+    );
+    expect(value.txListings.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts all listing statuses, including deleted records, by creation time', async () => {
+    const value = context(ParrotSaleListingStatus.DELETED_BY_USER);
+    value.txListings.count.mockResolvedValue(2);
+    await expectCode(
+      value.service.create(SELLER_ID, {
+        name: 'Bird',
+        species: 'Grey',
+        requestedPrice: 100,
+      }),
+      409,
+      ParrotSaleListingErrorCode.WEEKLY_LIMIT_REACHED,
+    );
+    const countCalls = value.txListings.count.mock.calls as unknown as Array<
+      [{ where: Record<string, unknown> }]
+    >;
+    expect(countCalls[0]?.[0].where).not.toHaveProperty('status');
+    expect(value.txListings.save).not.toHaveBeenCalled();
+  });
+
+  it('exempts only a persisted BREEDER with an APPROVED breeder application', async () => {
+    const value = context();
+    value.row.seller.role = UserRole.BREEDER;
+    value.txBreeders.exists.mockResolvedValue(true);
+    value.txListings.count.mockResolvedValue(2);
+
+    await expect(
+      value.service.create(SELLER_ID, {
+        name: 'Bird',
+        species: 'Grey',
+        requestedPrice: 100,
+      }),
+    ).resolves.toBeDefined();
+    expect(value.txBreeders.exists).toHaveBeenCalledWith({
+      where: { userId: SELLER_ID, status: 'APPROVED' },
+    });
+    expect(value.txListings.count).not.toHaveBeenCalled();
+  });
+
+  it('does not exempt a BREEDER without an approved application', async () => {
+    const value = context();
+    value.row.seller.role = UserRole.BREEDER;
+    value.txListings.count.mockResolvedValue(2);
+    await expectCode(
+      value.service.create(SELLER_ID, {
+        name: 'Bird',
+        species: 'Grey',
+        requestedPrice: 100,
+      }),
+      409,
+      ParrotSaleListingErrorCode.WEEKLY_LIMIT_REACHED,
+    );
+    expect(value.txBreeders.exists).toHaveBeenCalledTimes(1);
+    expect(value.txListings.save).not.toHaveBeenCalled();
   });
 
   it('stores a pair selection through tagPair without changing the database gender enum', async () => {

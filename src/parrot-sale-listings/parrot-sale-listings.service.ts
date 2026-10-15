@@ -1,9 +1,21 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Not, Repository } from 'typeorm';
+import {
+  And,
+  DataSource,
+  EntityManager,
+  LessThan,
+  MoreThanOrEqual,
+  Not,
+  Repository,
+} from 'typeorm';
 import { Product, ProductStatus } from '../products/entities/product.entity';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
-import { User } from '../users/entities/user.entity';
+import {
+  BreederApplication,
+  BreederApplicationStatus,
+} from '../seller-onboarding/entities/breeder-application.entity';
+import { User, UserRole } from '../users/entities/user.entity';
 import {
   CreateParrotSaleListingDto,
   PARROT_SALE_LISTING_PAIR_GENDER,
@@ -23,6 +35,7 @@ import {
   parrotSaleListingError,
 } from './parrot-sale-listing.errors';
 import { assertParrotSaleListingImageCount } from './parrot-sale-listing.validation';
+import { tehranWeekBounds } from './parrot-sale-listing-week';
 
 @Injectable()
 export class ParrotSaleListingsService {
@@ -43,11 +56,26 @@ export class ParrotSaleListingsService {
 
   async create(sellerUserId: string, input: CreateParrotSaleListingDto) {
     return this.dataSource.transaction(async (manager) => {
+      // Serialize creates for one seller before eligibility, quota, and INSERT.
+      const user = await manager.getRepository(User).findOne({
+        where: { id: sellerUserId },
+        lock: { mode: 'pessimistic_write' },
+      });
       await this.eligibility.assertEligibleSellerInTransaction(
         sellerUserId,
         manager,
       );
       await this.options.assertValidSelection(input, manager);
+      const approvedBreeder =
+        user?.role === UserRole.BREEDER &&
+        (await manager.getRepository(BreederApplication).exists({
+          where: {
+            userId: sellerUserId,
+            status: BreederApplicationStatus.APPROVED,
+          },
+        }));
+      if (!approvedBreeder)
+        await this.assertWeeklyCreateQuota(sellerUserId, manager);
       const listings = manager.getRepository(ParrotSaleListing);
       const listing = listings.create({
         sellerUserId,
@@ -81,6 +109,26 @@ export class ParrotSaleListingsService {
       saved.images = [];
       return saved;
     });
+  }
+
+  private async assertWeeklyCreateQuota(
+    sellerUserId: string,
+    manager: EntityManager,
+  ): Promise<void> {
+    const week = await tehranWeekBounds(manager);
+
+    const count = await manager.getRepository(ParrotSaleListing).count({
+      where: {
+        sellerUserId,
+        createdAt: And(MoreThanOrEqual(week.start), LessThan(week.end)),
+      },
+    });
+    if (count >= 2)
+      throw parrotSaleListingError(
+        HttpStatus.CONFLICT,
+        ParrotSaleListingErrorCode.WEEKLY_LIMIT_REACHED,
+        'در هر هفته حداکثر دو آگهی فروش پرنده می‌توانید ثبت کنید.',
+      );
   }
 
   async listOwn(sellerUserId: string) {
