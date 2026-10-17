@@ -23,6 +23,7 @@ import {
   UpdateParrotSaleListingDto,
 } from './dto/parrot-sale-listing.dto';
 import { ParrotSaleListingImage } from './entities/parrot-sale-listing-image.entity';
+import { ParrotSaleListingCreationLedger } from './entities/parrot-sale-listing-creation-ledger.entity';
 import {
   ParrotSaleListing,
   ParrotSaleListingStatus,
@@ -106,6 +107,12 @@ export class ParrotSaleListingsService {
         resubmissionOfId: null,
       });
       const saved = await listings.save(listing);
+      await manager.getRepository(ParrotSaleListingCreationLedger).insert({
+        listingId: saved.id,
+        sellerUserId: saved.sellerUserId,
+        createdAt: saved.createdAt,
+        deletedAt: null,
+      });
       saved.images = [];
       return saved;
     });
@@ -117,12 +124,14 @@ export class ParrotSaleListingsService {
   ): Promise<void> {
     const week = await tehranWeekBounds(manager);
 
-    const count = await manager.getRepository(ParrotSaleListing).count({
-      where: {
-        sellerUserId,
-        createdAt: And(MoreThanOrEqual(week.start), LessThan(week.end)),
-      },
-    });
+    const count = await manager
+      .getRepository(ParrotSaleListingCreationLedger)
+      .count({
+        where: {
+          sellerUserId,
+          createdAt: And(MoreThanOrEqual(week.start), LessThan(week.end)),
+        },
+      });
     if (count >= 2)
       throw parrotSaleListingError(
         HttpStatus.CONFLICT,

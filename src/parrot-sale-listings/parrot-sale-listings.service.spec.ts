@@ -6,6 +6,7 @@ import { BreederApplication } from '../seller-onboarding/entities/breeder-applic
 import { User, UserRole } from '../users/entities/user.entity';
 import { PARROT_SALE_LISTING_PAIR_GENDER } from './dto/parrot-sale-listing.dto';
 import { ParrotSaleListingImage } from './entities/parrot-sale-listing-image.entity';
+import { ParrotSaleListingCreationLedger } from './entities/parrot-sale-listing-creation-ledger.entity';
 import {
   ParrotSaleListing,
   ParrotSaleListingStatus,
@@ -102,6 +103,10 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     save: jest.fn(async (value: ParrotSaleListingImage) => value),
     remove: jest.fn(async (value: ParrotSaleListingImage) => value),
   };
+  const txLedger = {
+    count: jest.fn().mockResolvedValue(0),
+    insert: jest.fn().mockResolvedValue({ identifiers: [] }),
+  };
   const txUsers = {
     findOne: jest.fn().mockResolvedValue(seller),
   };
@@ -116,6 +121,7 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     getRepository: jest.fn((target: unknown) => {
       if (target === ParrotSaleListing) return txListings;
       if (target === ParrotSaleListingImage) return txImages;
+      if (target === ParrotSaleListingCreationLedger) return txLedger;
       if (target === User) return txUsers;
       if (target === BreederApplication) return txBreeders;
       if (target === Product) return txProducts;
@@ -168,6 +174,7 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     globalListings,
     txListings,
     txImages,
+    txLedger,
     txUsers,
     txBreeders,
     txProducts,
@@ -227,12 +234,21 @@ describe('ParrotSaleListingsService customer workflow', () => {
       lock: { mode: 'pessimistic_write' },
     });
     expect(value.txUsers.findOne.mock.invocationCallOrder[0]).toBeLessThan(
-      value.txListings.count.mock.invocationCallOrder[0],
+      value.txLedger.count.mock.invocationCallOrder[0],
     );
-    expect(value.txListings.count.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(value.txLedger.count.mock.invocationCallOrder[0]).toBeLessThan(
       value.txListings.save.mock.invocationCallOrder[0],
     );
-    const countCalls = value.txListings.count.mock.calls as unknown as Array<
+    expect(value.txLedger.insert).toHaveBeenCalledWith({
+      listingId: LISTING_ID,
+      sellerUserId: SELLER_ID,
+      createdAt: value.row.createdAt,
+      deletedAt: null,
+    });
+    expect(value.txListings.save.mock.invocationCallOrder[0]).toBeLessThan(
+      value.txLedger.insert.mock.invocationCallOrder[0],
+    );
+    const countCalls = value.txLedger.count.mock.calls as unknown as Array<
       [{ where: { sellerUserId: string; createdAt: unknown } }]
     >;
     expect(countCalls[0]?.[0].where.sellerUserId).toBe(SELLER_ID);
@@ -245,7 +261,7 @@ describe('ParrotSaleListingsService customer workflow', () => {
 
   it('allows the second customer listing but rejects the third with a stable 409', async () => {
     const value = context();
-    value.txListings.count.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+    value.txLedger.count.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
     const input = { name: 'Bird', species: 'Grey', requestedPrice: 100 };
 
     await expect(value.service.create(SELLER_ID, input)).resolves.toBeDefined();
@@ -255,11 +271,12 @@ describe('ParrotSaleListingsService customer workflow', () => {
       ParrotSaleListingErrorCode.WEEKLY_LIMIT_REACHED,
     );
     expect(value.txListings.save).toHaveBeenCalledTimes(1);
+    expect(value.txLedger.insert).toHaveBeenCalledTimes(1);
   });
 
   it('counts all listing statuses, including deleted records, by creation time', async () => {
     const value = context(ParrotSaleListingStatus.DELETED_BY_USER);
-    value.txListings.count.mockResolvedValue(2);
+    value.txLedger.count.mockResolvedValue(2);
     await expectCode(
       value.service.create(SELLER_ID, {
         name: 'Bird',
@@ -269,7 +286,7 @@ describe('ParrotSaleListingsService customer workflow', () => {
       409,
       ParrotSaleListingErrorCode.WEEKLY_LIMIT_REACHED,
     );
-    const countCalls = value.txListings.count.mock.calls as unknown as Array<
+    const countCalls = value.txLedger.count.mock.calls as unknown as Array<
       [{ where: Record<string, unknown> }]
     >;
     expect(countCalls[0]?.[0].where).not.toHaveProperty('status');
@@ -280,7 +297,7 @@ describe('ParrotSaleListingsService customer workflow', () => {
     const value = context();
     value.row.seller.role = UserRole.BREEDER;
     value.txBreeders.exists.mockResolvedValue(true);
-    value.txListings.count.mockResolvedValue(2);
+    value.txLedger.count.mockResolvedValue(2);
 
     await expect(
       value.service.create(SELLER_ID, {
@@ -292,13 +309,13 @@ describe('ParrotSaleListingsService customer workflow', () => {
     expect(value.txBreeders.exists).toHaveBeenCalledWith({
       where: { userId: SELLER_ID, status: 'APPROVED' },
     });
-    expect(value.txListings.count).not.toHaveBeenCalled();
+    expect(value.txLedger.count).not.toHaveBeenCalled();
   });
 
   it('does not exempt a BREEDER without an approved application', async () => {
     const value = context();
     value.row.seller.role = UserRole.BREEDER;
-    value.txListings.count.mockResolvedValue(2);
+    value.txLedger.count.mockResolvedValue(2);
     await expectCode(
       value.service.create(SELLER_ID, {
         name: 'Bird',

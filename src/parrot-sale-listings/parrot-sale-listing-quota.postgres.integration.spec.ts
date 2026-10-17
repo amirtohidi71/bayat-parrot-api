@@ -15,6 +15,7 @@ import {
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
 import { User, UserRole } from '../users/entities/user.entity';
 import { ParrotSaleListingImage } from './entities/parrot-sale-listing-image.entity';
+import { ParrotSaleListingCreationLedger } from './entities/parrot-sale-listing-creation-ledger.entity';
 import {
   ParrotSaleListing,
   ParrotSaleListingStatus,
@@ -34,6 +35,9 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
   let administrator: DataSource;
   let source: DataSource;
   let databaseCreated = false;
+  let backfilledListingId: string;
+  let backfilledSellerUserId: string;
+  let backfilledCreatedAt: Date;
 
   beforeAll(async () => {
     const target = disposableUrl();
@@ -67,6 +71,7 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
         BreederApplication,
         ParrotSaleListing,
         ParrotSaleListingImage,
+        ParrotSaleListingCreationLedger,
       ],
       synchronize: false,
       logging: false,
@@ -86,6 +91,23 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
       );
       await source.query(sql.replace(/^\\set[^\r\n]*(?:\r?\n)?/, ''));
     }
+    const seedUser = await source.getRepository(User).save({
+      phone: '09333333333',
+      role: UserRole.CUSTOMER,
+    });
+    backfilledSellerUserId = seedUser.id;
+    const [seedListing] = await source.query<
+      Array<{ id: string; createdAt: Date }>
+    >(
+      `INSERT INTO public.parrot_sale_listings
+        ("sellerUserId", name, species, "requestedPrice")
+       VALUES ($1, 'Historical bird', 'African Grey', 100)
+       RETURNING id, "createdAt"`,
+      [seedUser.id],
+    );
+    backfilledListingId = seedListing.id;
+    backfilledCreatedAt = seedListing.createdAt;
+    await applyLedgerMigration();
   }, 60_000);
 
   afterAll(async () => {
@@ -113,6 +135,37 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
     await source.query(
       'TRUNCATE public.parrot_sale_listings, public.breeder_applications, public.seller_verifications, public.users CASCADE',
     );
+  });
+
+  it('backfills original listing identity and time exactly once, including on migration rerun', async () => {
+    const ledger = source.getRepository(ParrotSaleListingCreationLedger);
+    const first = await ledger.findOneByOrFail({
+      listingId: backfilledListingId,
+    });
+    expect(first.sellerUserId).toBe(backfilledSellerUserId);
+    expect(first.createdAt).toEqual(backfilledCreatedAt);
+    expect(first.deletedAt).toBeNull();
+    await applyLedgerMigration();
+    expect(
+      await ledger.count({ where: { listingId: backfilledListingId } }),
+    ).toBe(1);
+    const user = await eligibleUser(
+      '09333333333',
+      UserRole.CUSTOMER,
+      backfilledSellerUserId,
+    );
+    const input = {
+      name: 'Test parrot',
+      species: 'African Grey',
+      requestedPrice: 100,
+    };
+    await listingService().create(user.id, input);
+    try {
+      await listingService().create(user.id, input);
+      throw new Error('Expected the backfilled quota to reject this create');
+    } catch (error) {
+      expectQuotaError(error);
+    }
   });
 
   it('uses Tehran Saturday boundaries as UTC instants, with an exclusive next Saturday', async () => {
@@ -155,6 +208,8 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
       where: { sellerUserId: user.id },
     });
     expect(listings).toHaveLength(2);
+    const ledger = source.getRepository(ParrotSaleListingCreationLedger);
+    expect(await ledger.count({ where: { sellerUserId: user.id } })).toBe(2);
     expect(
       listings.every(
         (listing) => listing.status === ParrotSaleListingStatus.DRAFT,
@@ -162,9 +217,16 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
     ).toBe(true);
 
     await service.delete(user.id, listings[0].id);
-    await expect(service.create(user.id, input)).rejects.toMatchObject({
-      status: 409,
+    await source.getRepository(ParrotSaleListing).update(listings[1].id, {
+      status: ParrotSaleListingStatus.PENDING_REVIEW,
     });
+    try {
+      await service.create(user.id, input);
+      throw new Error('Expected the weekly quota to reject this create');
+    } catch (error) {
+      expectQuotaError(error);
+    }
+    expect(await ledger.count({ where: { sellerUserId: user.id } })).toBe(2);
     expect(
       await source
         .getRepository(ParrotSaleListing)
@@ -203,6 +265,11 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
         .getRepository(ParrotSaleListing)
         .count({ where: { sellerUserId: approved.id } }),
     ).toBe(3);
+    expect(
+      await source.getRepository(ParrotSaleListingCreationLedger).count({
+        where: { sellerUserId: approved.id },
+      }),
+    ).toBe(3);
 
     await service.create(unapproved.id, input);
     await service.create(unapproved.id, input);
@@ -213,6 +280,103 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
       expectQuotaError(error);
     }
   });
+
+  it('rejects a duplicate creation ledger identity', async () => {
+    const user = await eligibleUser();
+    const saved = await listingService().create(user.id, {
+      name: 'Test parrot',
+      species: 'African Grey',
+      requestedPrice: 100,
+    });
+    await expect(
+      source.getRepository(ParrotSaleListingCreationLedger).insert({
+        listingId: saved.id,
+        sellerUserId: user.id,
+        createdAt: saved.createdAt,
+        deletedAt: null,
+      }),
+    ).rejects.toMatchObject({ driverError: { code: '23505' } });
+  });
+
+  it('keeps creation identity immutable and allows deletion time only once', async () => {
+    const user = await eligibleUser();
+    const saved = await listingService().create(user.id, {
+      name: 'Test parrot',
+      species: 'African Grey',
+      requestedPrice: 100,
+    });
+    await expect(
+      source.query(
+        'UPDATE public.parrot_sale_listing_creation_ledger SET "createdAt" = now() - interval \'1 day\' WHERE "listingId" = $1',
+        [saved.id],
+      ),
+    ).rejects.toMatchObject({ driverError: { code: '23514' } });
+    await expect(
+      source.query(
+        'DELETE FROM public.parrot_sale_listing_creation_ledger WHERE "listingId" = $1',
+        [saved.id],
+      ),
+    ).rejects.toMatchObject({ driverError: { code: '23514' } });
+    await source.query(
+      'UPDATE public.parrot_sale_listing_creation_ledger SET "deletedAt" = now() WHERE "listingId" = $1',
+      [saved.id],
+    );
+    await expect(
+      source.query(
+        'UPDATE public.parrot_sale_listing_creation_ledger SET "deletedAt" = now() WHERE "listingId" = $1',
+        [saved.id],
+      ),
+    ).rejects.toMatchObject({ driverError: { code: '23514' } });
+  });
+
+  it('rolls back the listing when its ledger insert fails', async () => {
+    const user = await eligibleUser();
+    await source.query(`CREATE FUNCTION public.test_reject_listing_ledger_insert()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'Test ledger insert failure' USING ERRCODE = '23514'; END
+      $$`);
+    await source.query(`CREATE TRIGGER test_reject_listing_ledger_insert
+      BEFORE INSERT ON public.parrot_sale_listing_creation_ledger
+      FOR EACH ROW EXECUTE FUNCTION public.test_reject_listing_ledger_insert()`);
+    try {
+      await expect(
+        listingService().create(user.id, {
+          name: 'Test parrot',
+          species: 'African Grey',
+          requestedPrice: 100,
+        }),
+      ).rejects.toMatchObject({ driverError: { code: '23514' } });
+      expect(
+        await source.getRepository(ParrotSaleListing).count({
+          where: { sellerUserId: user.id },
+        }),
+      ).toBe(0);
+      expect(
+        await source.getRepository(ParrotSaleListingCreationLedger).count({
+          where: { sellerUserId: user.id },
+        }),
+      ).toBe(0);
+    } finally {
+      await source.query(
+        'DROP TRIGGER test_reject_listing_ledger_insert ON public.parrot_sale_listing_creation_ledger',
+      );
+      await source.query(
+        'DROP FUNCTION public.test_reject_listing_ledger_insert()',
+      );
+    }
+  });
+
+  async function applyLedgerMigration() {
+    const sql = await readFile(
+      resolve(
+        process.cwd(),
+        'scripts/migrations',
+        '20261017-create-parrot-sale-listing-creation-ledger-v1.sql',
+      ),
+      'utf8',
+    );
+    await source.query(sql.replace(/^\\set[^\r\n]*(?:\r?\n)?/, ''));
+  }
 
   function listingService() {
     return new ParrotSaleListingsService(
@@ -227,8 +391,13 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
     );
   }
 
-  async function eligibleUser(phone = '09000000000', role = UserRole.CUSTOMER) {
+  async function eligibleUser(
+    phone = '09000000000',
+    role = UserRole.CUSTOMER,
+    id?: string,
+  ) {
     const user = await source.getRepository(User).save({
+      ...(id ? { id } : {}),
       phone,
       firstName: 'Test',
       lastName: 'Seller',

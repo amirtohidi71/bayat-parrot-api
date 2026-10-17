@@ -5,6 +5,7 @@ import { SellerOnboardingModule } from '../seller-onboarding/seller-onboarding.m
 import { ProductsModule } from '../products/products.module';
 import { AdminParrotSaleListingsController } from './admin-parrot-sale-listings.controller';
 import { ParrotSaleListingImage } from './entities/parrot-sale-listing-image.entity';
+import { ParrotSaleListingCreationLedger } from './entities/parrot-sale-listing-creation-ledger.entity';
 import { ParrotSaleListing } from './entities/parrot-sale-listing.entity';
 import { ParrotSaleListingImageStorageService } from './images/parrot-sale-listing-image-storage.service';
 import {
@@ -19,7 +20,11 @@ import { ParrotSaleListingsService } from './parrot-sale-listings.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ParrotSaleListing, ParrotSaleListingImage]),
+    TypeOrmModule.forFeature([
+      ParrotSaleListing,
+      ParrotSaleListingImage,
+      ParrotSaleListingCreationLedger,
+    ]),
     AdminModule,
     ProductsModule,
     SellerOnboardingModule,
