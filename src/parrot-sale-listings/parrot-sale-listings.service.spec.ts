@@ -88,6 +88,8 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
   const txListings = {
     findOne: jest.fn().mockResolvedValue(row),
     count: jest.fn().mockResolvedValue(0),
+    exists: jest.fn().mockResolvedValue(false),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
     create: jest.fn((value: Partial<ParrotSaleListing>) =>
       Object.assign(listing(), value),
     ),
@@ -102,10 +104,22 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     ),
     save: jest.fn(async (value: ParrotSaleListingImage) => value),
     remove: jest.fn(async (value: ParrotSaleListingImage) => value),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
   };
+  const history = Object.assign(new ParrotSaleListingCreationLedger(), {
+    listingId: LISTING_ID,
+    sellerUserId: SELLER_ID,
+    createdAt: row.createdAt,
+    deletedAt: null as Date | null,
+    cleanupCompletedAt: null as Date | null,
+  });
   const txLedger = {
     count: jest.fn().mockResolvedValue(0),
     insert: jest.fn().mockResolvedValue({ identifiers: [] }),
+    findOne: jest.fn(async (options: { where: { sellerUserId: string } }) =>
+      options.where.sellerUserId === SELLER_ID ? history : null,
+    ),
+    save: jest.fn(async (value: ParrotSaleListingCreationLedger) => value),
   };
   const txUsers = {
     findOne: jest.fn().mockResolvedValue(seller),
@@ -175,6 +189,7 @@ function context(status = ParrotSaleListingStatus.DRAFT) {
     txListings,
     txImages,
     txLedger,
+    history,
     txUsers,
     txBreeders,
     txProducts,
@@ -750,24 +765,37 @@ describe('ParrotSaleListingsService customer workflow', () => {
     ParrotSaleListingStatus.DRAFT,
     ParrotSaleListingStatus.REJECTED,
     ParrotSaleListingStatus.PENDING_REVIEW,
-  ])('soft-deletes an owned %s listing for audit', async (status) => {
-    const value = context(status);
-    await expect(
-      value.service.delete(SELLER_ID, LISTING_ID),
-    ).resolves.toMatchObject({
-      status: ParrotSaleListingStatus.DELETED_BY_USER,
-    });
-    expect(value.txListings.findOne).toHaveBeenCalledWith({
-      where: { id: LISTING_ID, sellerUserId: SELLER_ID },
-      lock: { mode: 'pessimistic_write' },
-    });
-  });
+  ])(
+    'deletes an owned %s listing while keeping creation history',
+    async (status) => {
+      const value = context(status);
+      value.txImages.count.mockResolvedValue(0);
+      await expect(
+        value.service.delete(SELLER_ID, LISTING_ID),
+      ).resolves.toMatchObject({
+        status: ParrotSaleListingStatus.DELETED_BY_USER,
+      });
+      expect(value.txListings.findOne).toHaveBeenCalledWith({
+        where: { id: LISTING_ID, sellerUserId: SELLER_ID },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(value.history.deletedAt).toBeInstanceOf(Date);
+      expect(value.txLedger.save).toHaveBeenCalledWith(value.history);
+      expect(value.txListings.delete).toHaveBeenCalledWith({
+        id: LISTING_ID,
+        sellerUserId: SELLER_ID,
+      });
+    },
+  );
 
   it('soft-deletes an approved listing and unpublishes its linked Product', async () => {
     const value = context(ParrotSaleListingStatus.APPROVED);
     await value.service.delete(SELLER_ID, LISTING_ID);
     expect(value.row.status).toBe(ParrotSaleListingStatus.DELETED_BY_USER);
     expect(value.product.status).toBe(ProductStatus.DRAFT);
+    expect(value.product.images).toEqual([
+      '/uploads/parrot-sale-listings/existing.webp',
+    ]);
     expect(value.txProducts.save).toHaveBeenCalledWith(value.product);
   });
 
@@ -808,6 +836,73 @@ describe('ParrotSaleListingsService customer workflow', () => {
     );
     expect(value.txProducts.findOne).not.toHaveBeenCalled();
     expect(value.txListings.save).not.toHaveBeenCalled();
+    expect(value.txLedger.save).not.toHaveBeenCalled();
+    expect(value.txListings.delete).not.toHaveBeenCalled();
+  });
+
+  it('keeps image rows until private file removal succeeds', async () => {
+    const value = context();
+    value.txImages.find.mockResolvedValue([image()]);
+    value.storage.delete.mockRejectedValueOnce(new Error('disk unavailable'));
+    await expect(value.service.delete(SELLER_ID, LISTING_ID)).rejects.toThrow(
+      'disk unavailable',
+    );
+    expect(value.row.status).toBe(ParrotSaleListingStatus.DELETED_BY_USER);
+    expect(value.history.deletedAt).toBeInstanceOf(Date);
+    expect(value.txImages.delete).not.toHaveBeenCalled();
+    expect(value.txListings.delete).not.toHaveBeenCalled();
+    await value.service.delete(SELLER_ID, LISTING_ID);
+    expect(value.txImages.delete).toHaveBeenCalledWith({
+      id: IMAGE_ID,
+      listingId: LISTING_ID,
+    });
+  });
+
+  it('keeps a tombstone if another listing references the deleted listing', async () => {
+    const value = context();
+    value.txImages.count.mockResolvedValue(0);
+    value.txListings.exists.mockResolvedValue(true);
+    await value.service.delete(SELLER_ID, LISTING_ID);
+    expect(value.txListings.exists).toHaveBeenCalledWith({
+      where: { resubmissionOfId: LISTING_ID },
+    });
+    expect(value.txListings.delete).not.toHaveBeenCalled();
+  });
+
+  it('keeps the tombstone when an inbound FK appears during physical deletion', async () => {
+    const value = context();
+    value.txImages.count.mockResolvedValue(0);
+    value.txListings.delete.mockRejectedValueOnce({
+      driverError: { code: '23503' },
+    });
+    await expect(
+      value.service.delete(SELLER_ID, LISTING_ID),
+    ).resolves.toMatchObject({
+      status: ParrotSaleListingStatus.DELETED_BY_USER,
+    });
+    expect(value.history.deletedAt).toBeInstanceOf(Date);
+  });
+
+  it('retries a tombstone without rewriting its deletion time or product', async () => {
+    const value = context(ParrotSaleListingStatus.DELETED_BY_USER);
+    value.history.deletedAt = new Date('2026-10-10T00:00:00Z');
+    await value.service.delete(SELLER_ID, LISTING_ID);
+    expect(value.history.deletedAt.toISOString()).toBe(
+      '2026-10-10T00:00:00.000Z',
+    );
+    expect(value.txLedger.save).not.toHaveBeenCalled();
+    expect(value.txProducts.save).not.toHaveBeenCalled();
+  });
+
+  it('accepts an already hard-deleted owned listing from the permanent ledger', async () => {
+    const value = context();
+    value.txListings.findOne.mockResolvedValue(null);
+    value.history.deletedAt = new Date();
+    await expect(
+      value.service.delete(SELLER_ID, LISTING_ID),
+    ).resolves.toBeNull();
+    expect(value.txListings.delete).not.toHaveBeenCalled();
+    expect(value.txProducts.save).not.toHaveBeenCalled();
   });
 
   it('soft-deletes a re-review listing while retaining its linked Product audit reference', async () => {

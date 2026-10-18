@@ -23,6 +23,7 @@ import {
   CreateParrotSaleListingDto,
   UpdateParrotSaleListingDto,
 } from './dto/parrot-sale-listing.dto';
+import { ParrotSaleListingStatus } from './entities/parrot-sale-listing.entity';
 import { parrotSaleListingImageUploadOptions } from './images/parrot-sale-listing-image-upload.config';
 import {
   parrotSaleListingPrivateImageResponse,
@@ -100,9 +101,10 @@ export class ParrotSaleListingsController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('id', uuidPipe) id: string,
   ) {
-    return parrotSaleListingSellerResponse(
-      await this.listings.delete(user.id, id),
-    );
+    const deleted = await this.listings.delete(user.id, id);
+    return deleted
+      ? parrotSaleListingSellerResponse(deleted)
+      : { id, status: ParrotSaleListingStatus.DELETED_BY_USER };
   }
 
   @Post(':id/images')

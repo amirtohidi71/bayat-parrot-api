@@ -164,6 +164,14 @@ describe('ParrotSaleListingsController customer routes', () => {
     expect(service.submit).toHaveBeenCalledWith(SELLER_ID, LISTING_ID);
   });
 
+  it('acknowledges a repeated delete after physical cleanup without exposing private data', async () => {
+    service.delete.mockResolvedValueOnce(null);
+    await expect(controller.delete(user, LISTING_ID)).resolves.toEqual({
+      id: LISTING_ID,
+      status: ParrotSaleListingStatus.DELETED_BY_USER,
+    });
+  });
+
   it('rejects an image request without an in-memory decoded payload', async () => {
     try {
       await controller.addImage(user, LISTING_ID, undefined);

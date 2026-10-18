@@ -17,4 +17,7 @@ export class ParrotSaleListingCreationLedger {
 
   @Column({ type: 'timestamptz', nullable: true })
   deletedAt: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  cleanupCompletedAt: Date | null;
 }

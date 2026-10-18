@@ -1,4 +1,9 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  HttpStatus,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   And,
@@ -360,19 +365,137 @@ export class ParrotSaleListingsService {
   }
 
   async delete(sellerUserId: string, id: string) {
-    return this.dataSource.transaction(async (manager) => {
+    const deleted = await this.dataSource.transaction(async (manager) => {
       const listings = manager.getRepository(ParrotSaleListing);
-      const listing = await this.lockedOwned(listings, sellerUserId, id);
-      if (listing.status === ParrotSaleListingStatus.DELETED_BY_USER)
+      const ledger = manager.getRepository(ParrotSaleListingCreationLedger);
+      const listing = await listings.findOne({
+        where: { id, sellerUserId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!listing) {
+        const history = await ledger.findOne({
+          where: { listingId: id, sellerUserId },
+        });
+        if (!history?.deletedAt) this.notFound();
+        return null;
+      }
+      const history = await ledger.findOne({
+        where: { listingId: id, sellerUserId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!history)
+        throw new InternalServerErrorException(
+          'Parrot sale listing deletion history is unavailable',
+        );
+      if (listing.status !== ParrotSaleListingStatus.DELETED_BY_USER) {
+        await this.unpublishLinkedProduct(listing, manager, true);
+        listing.status = ParrotSaleListingStatus.DELETED_BY_USER;
+        await listings.save(listing);
+      }
+      if (!history.deletedAt) {
+        history.deletedAt = new Date();
+        await ledger.save(history);
+      }
+      return this.withImages(listing, manager);
+    });
+    if (!deleted) {
+      await this.completeCleanup(sellerUserId, id);
+      return null;
+    }
+    await this.cleanupDeletedImages(sellerUserId, id);
+    await this.removeUnreferencedDeletedListing(sellerUserId, id);
+    await this.completeCleanup(sellerUserId, id);
+    deleted.images = [];
+    return deleted;
+  }
+
+  private async cleanupDeletedImages(sellerUserId: string, id: string) {
+    await this.dataSource.transaction(async (manager) => {
+      const listings = manager.getRepository(ParrotSaleListing);
+      const listing = await listings.findOne({
+        where: { id, sellerUserId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!listing) return;
+      if (listing.status !== ParrotSaleListingStatus.DELETED_BY_USER)
         throw parrotSaleListingError(
           HttpStatus.CONFLICT,
-          ParrotSaleListingErrorCode.ALREADY_DELETED,
-          'Parrot sale listing is already deleted by the seller',
+          ParrotSaleListingErrorCode.INVALID_TRANSITION,
+          'Only deleted parrot sale listings can be cleaned up',
         );
-      await this.unpublishLinkedProduct(listing, manager, true);
-      listing.status = ParrotSaleListingStatus.DELETED_BY_USER;
-      const saved = await listings.save(listing);
-      return this.withImages(saved, manager);
+      const images = manager.getRepository(ParrotSaleListingImage);
+      const privateImages = await images.find({ where: { listingId: id } });
+      for (const image of privateImages) {
+        await this.storage.delete(image.storageKey);
+        await images.delete({ id: image.id, listingId: id });
+      }
+    });
+  }
+
+  private async removeUnreferencedDeletedListing(
+    sellerUserId: string,
+    id: string,
+  ) {
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        const listings = manager.getRepository(ParrotSaleListing);
+        const listing = await listings.findOne({
+          where: { id, sellerUserId },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!listing) return;
+        if (listing.status !== ParrotSaleListingStatus.DELETED_BY_USER)
+          throw parrotSaleListingError(
+            HttpStatus.CONFLICT,
+            ParrotSaleListingErrorCode.INVALID_TRANSITION,
+            'Only deleted parrot sale listings can be removed',
+          );
+        if (
+          (await manager.getRepository(ParrotSaleListingImage).count({
+            where: { listingId: id },
+          })) > 0
+        )
+          return;
+        if (await listings.exists({ where: { resubmissionOfId: id } })) return;
+        await listings.delete({ id, sellerUserId });
+      });
+    } catch (error) {
+      // A concurrent inbound FK reference wins the race: retain the tombstone.
+      if (
+        (error as { driverError?: { code?: string } }).driverError?.code ===
+        '23503'
+      )
+        return;
+      throw error;
+    }
+  }
+
+  private async completeCleanup(sellerUserId: string, id: string) {
+    await this.dataSource.transaction(async (manager) => {
+      const listings = manager.getRepository(ParrotSaleListing);
+      const listing = await listings.findOne({
+        where: { id, sellerUserId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (listing) {
+        if (listing.status !== ParrotSaleListingStatus.DELETED_BY_USER) return;
+        const images = await manager
+          .getRepository(ParrotSaleListingImage)
+          .count({
+            where: { listingId: id },
+          });
+        if (images > 0) return;
+        if (!(await listings.exists({ where: { resubmissionOfId: id } })))
+          return;
+      }
+      const ledger = manager.getRepository(ParrotSaleListingCreationLedger);
+      const history = await ledger.findOne({
+        where: { listingId: id, sellerUserId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!history?.deletedAt || history.cleanupCompletedAt) return;
+      history.cleanupCompletedAt = new Date();
+      await ledger.save(history);
     });
   }
 

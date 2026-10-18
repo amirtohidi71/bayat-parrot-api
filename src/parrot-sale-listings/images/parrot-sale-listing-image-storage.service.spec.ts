@@ -158,4 +158,14 @@ describe('ParrotSaleListingImageStorageService', () => {
       ),
     ).toBe(false);
   });
+
+  it('treats an already absent private file as a successful cleanup retry', async () => {
+    const service = new ParrotSaleListingImageStorageService();
+    const storageKey = await service.save(await validImage('png'), 'image/png');
+    await service.delete(storageKey);
+    await expect(service.delete(storageKey)).resolves.toBeUndefined();
+    await expect(lstat(join(storageRoot, storageKey))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
 });

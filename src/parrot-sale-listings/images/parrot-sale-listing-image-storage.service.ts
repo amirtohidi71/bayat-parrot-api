@@ -112,11 +112,21 @@ export class ParrotSaleListingImageStorageService {
   async delete(storageKey: string): Promise<void> {
     const root = await this.prepareRoot();
     const candidate = this.resolveIdentifier(root, storageKey);
-    const entry = await lstat(candidate).catch(() => null);
+    const entry = await lstat(candidate).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw new InternalServerErrorException(
+        'Could not inspect private image file',
+      );
+    });
     if (!entry) return;
     if (!entry.isFile() || entry.isSymbolicLink())
       throw new InternalServerErrorException('Invalid private image file');
-    await rm(candidate);
+    await rm(candidate).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+        throw new InternalServerErrorException(
+          'Could not delete private image file',
+        );
+    });
   }
 
   private async writePrivateTemporary(
