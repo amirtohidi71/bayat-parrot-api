@@ -144,4 +144,18 @@ describe('SellerEligibilityPolicy role separation', () => {
       expect(value.verifications.findOne).not.toHaveBeenCalled();
     },
   );
+  it('resolves latest verification without selecting a historical approved status', async () => {
+    const value = setup(UserRole.BREEDER);
+    value.verification.status = SellerVerificationStatus.PENDING;
+    await expect(
+      value.policy.assertEligibleSeller(value.user.id),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'SELLER_VERIFICATION_REQUIRED' },
+    });
+    expect(value.verifications.findOne).toHaveBeenCalledWith({
+      where: { userId: value.user.id },
+      order: { createdAt: 'DESC', id: 'DESC' },
+    });
+  });
 });

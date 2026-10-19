@@ -90,13 +90,17 @@ export class SellerEligibilityPolicy {
       );
     }
     const verification = await verifications.findOne({
-      where: { userId, status: SellerVerificationStatus.APPROVED },
-      order: { createdAt: 'DESC' },
+      where: { userId },
+      order: { createdAt: 'DESC', id: 'DESC' },
       ...(lockVerification
         ? { lock: { mode: 'pessimistic_write' as const } }
         : {}),
     });
-    if (!verification) {
+    if (
+      !verification ||
+      (!verification.revokedAt &&
+        verification.status !== SellerVerificationStatus.APPROVED)
+    ) {
       throw onboardingError(
         HttpStatus.FORBIDDEN,
         SellerErrorCode.VERIFICATION_REQUIRED,
@@ -114,9 +118,24 @@ export class SellerEligibilityPolicy {
     return { user, verification };
   }
 
+  async canSubmitParrotSaleListingInTransaction(
+    userId: string,
+    manager: EntityManager,
+  ): Promise<SellerEligibility> {
+    return this.eligibilityResult(() =>
+      this.assertEligibleSellerInTransaction(userId, manager),
+    );
+  }
+
   async canSubmitParrotSaleListing(userId: string): Promise<SellerEligibility> {
+    return this.eligibilityResult(() => this.assertEligibleSeller(userId));
+  }
+
+  private async eligibilityResult(
+    check: () => Promise<{ user: User; verification: SellerVerification }>,
+  ): Promise<SellerEligibility> {
     try {
-      const value = await this.assertEligibleSeller(userId);
+      const value = await check();
       return { eligible: true, ...value };
     } catch (error) {
       if (!(error instanceof HttpException)) throw error;

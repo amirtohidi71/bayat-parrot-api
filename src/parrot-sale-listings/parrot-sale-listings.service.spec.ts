@@ -1,3 +1,4 @@
+import { IsNull } from 'typeorm';
 /* eslint-disable @typescript-eslint/require-await -- transaction and repository mocks intentionally mirror async TypeORM APIs. */
 import { HttpException } from '@nestjs/common';
 import { Product, ProductStatus } from '../products/entities/product.entity';
@@ -322,7 +323,7 @@ describe('ParrotSaleListingsService customer workflow', () => {
       }),
     ).resolves.toBeDefined();
     expect(value.txBreeders.exists).toHaveBeenCalledWith({
-      where: { userId: SELLER_ID, status: 'APPROVED' },
+      where: { userId: SELLER_ID, status: 'APPROVED', revokedAt: IsNull() },
     });
     expect(value.txLedger.count).not.toHaveBeenCalled();
   });

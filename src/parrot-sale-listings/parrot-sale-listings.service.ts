@@ -10,11 +10,13 @@ import {
   DataSource,
   EntityManager,
   LessThan,
+  IsNull,
   MoreThanOrEqual,
   Not,
   Repository,
 } from 'typeorm';
 import { Product, ProductStatus } from '../products/entities/product.entity';
+import { lockSellerLifecycle } from '../seller-onboarding/seller-lifecycle';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
 import {
   BreederApplication,
@@ -62,6 +64,7 @@ export class ParrotSaleListingsService {
 
   async create(sellerUserId: string, input: CreateParrotSaleListingDto) {
     return this.dataSource.transaction(async (manager) => {
+      await lockSellerLifecycle(manager, sellerUserId);
       // Serialize creates for one seller before eligibility, quota, and INSERT.
       const user = await manager.getRepository(User).findOne({
         where: { id: sellerUserId },
@@ -78,6 +81,7 @@ export class ParrotSaleListingsService {
           where: {
             userId: sellerUserId,
             status: BreederApplicationStatus.APPROVED,
+            revokedAt: IsNull(),
           },
         }));
       if (!approvedBreeder)
@@ -228,6 +232,7 @@ export class ParrotSaleListingsService {
     input: UpdateParrotSaleListingDto,
   ) {
     return this.dataSource.transaction(async (manager) => {
+      await lockSellerLifecycle(manager, sellerUserId);
       const listings = manager.getRepository(ParrotSaleListing);
       const listing = await this.lockedOwned(listings, sellerUserId, id);
       this.assertEditable(listing);
@@ -260,6 +265,7 @@ export class ParrotSaleListingsService {
     const storageKey = await this.storage.save(buffer, suppliedMimeType);
     try {
       return await this.dataSource.transaction(async (manager) => {
+        await lockSellerLifecycle(manager, sellerUserId);
         const listings = manager.getRepository(ParrotSaleListing);
         const images = manager.getRepository(ParrotSaleListingImage);
         const listing = await this.lockedOwned(listings, sellerUserId, id);
@@ -307,6 +313,7 @@ export class ParrotSaleListingsService {
 
   async deleteImage(sellerUserId: string, id: string, imageId: string) {
     const result = await this.dataSource.transaction(async (manager) => {
+      await lockSellerLifecycle(manager, sellerUserId);
       const listings = manager.getRepository(ParrotSaleListing);
       const images = manager.getRepository(ParrotSaleListingImage);
       const listing = await this.lockedOwned(listings, sellerUserId, id);
@@ -341,6 +348,7 @@ export class ParrotSaleListingsService {
 
   async submit(sellerUserId: string, id: string) {
     return this.dataSource.transaction(async (manager) => {
+      await lockSellerLifecycle(manager, sellerUserId);
       const listings = manager.getRepository(ParrotSaleListing);
       const images = manager.getRepository(ParrotSaleListingImage);
       const listing = await this.lockedOwned(listings, sellerUserId, id);
@@ -366,6 +374,7 @@ export class ParrotSaleListingsService {
 
   async delete(sellerUserId: string, id: string) {
     const deleted = await this.dataSource.transaction(async (manager) => {
+      await lockSellerLifecycle(manager, sellerUserId);
       const listings = manager.getRepository(ParrotSaleListing);
       const ledger = manager.getRepository(ParrotSaleListingCreationLedger);
       const listing = await listings.findOne({

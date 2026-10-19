@@ -1,3 +1,4 @@
+import { lockSellerLifecycle } from '../seller-onboarding/seller-lifecycle';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { SellerListingProductPublisherService } from '../products/seller-listing-product-publisher.service';
@@ -43,6 +44,8 @@ export class ParrotSaleListingApprovalService {
     try {
       const result = await this.dataSource.transaction(async (manager) => {
         const listings = manager.getRepository(ParrotSaleListing);
+        const initial = await listings.findOne({ where: { id } });
+        if (initial) await lockSellerLifecycle(manager, initial.sellerUserId);
         const listing = await listings.findOne({
           where: { id },
           lock: { mode: 'pessimistic_write' },

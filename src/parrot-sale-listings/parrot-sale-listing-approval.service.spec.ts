@@ -82,6 +82,7 @@ function context() {
   const txImages = { find: jest.fn().mockResolvedValue([image]) };
   const txUsers = { findOne: jest.fn().mockResolvedValue(seller) };
   const manager = {
+    query: jest.fn().mockResolvedValue([]),
     getRepository: jest.fn((target: unknown) => {
       if (target === ParrotSaleListing) return txListings;
       if (target === ParrotSaleListingImage) return txImages;
@@ -343,7 +344,10 @@ describe('ProductsService seller-listing product helper', () => {
       ),
       save: jest.fn(async (input: Product) => input),
     };
-    const manager = { getRepository: jest.fn(() => repository) };
+    const manager = {
+      query: jest.fn().mockResolvedValue([]),
+      getRepository: jest.fn(() => repository),
+    };
     const service = new SellerListingProductPublisherService();
 
     const product = await service.create(manager as never, {
@@ -396,7 +400,10 @@ describe('ProductsService seller-listing product helper', () => {
       findOne: jest.fn().mockResolvedValue(product),
       save: jest.fn(async (value: Product) => value),
     };
-    const manager = { getRepository: jest.fn(() => repository) };
+    const manager = {
+      query: jest.fn().mockResolvedValue([]),
+      getRepository: jest.fn(() => repository),
+    };
     const service = new SellerListingProductPublisherService();
     const result = await service.republish(manager as never, PRODUCT_ID, {
       name: 'Updated bird',

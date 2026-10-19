@@ -22,6 +22,7 @@ import {
   BreederCallOutcome,
 } from '../entities/breeder-application.entity';
 import { SellerVerificationStatus } from '../entities/seller-verification.entity';
+import { ReapplicationIntent } from '../seller-lifecycle';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -179,11 +180,22 @@ export class AdminRejectDto {
   internalAdminNote?: string;
 }
 
+export class AdminGrantSellerReapplicationDto {
+  @Transform(trim)
+  @IsString()
+  @Length(1, 500)
+  reason: string;
+}
+
 export class AdminRevokeSellerAccessDto {
   @Transform(trim)
   @IsString()
   @Length(1, 500)
   reason: string;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsEnum(ReapplicationIntent)
+  intent?: ReapplicationIntent;
 }
 
 export class AdminBreederCallDto {

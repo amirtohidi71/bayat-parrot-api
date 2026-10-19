@@ -1,3 +1,21 @@
+import { Test } from '@nestjs/testing';
+import { JwtModule, JwtService } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
+import { ConfigService } from '@nestjs/config';
+import { ValidationPipe } from '@nestjs/common';
+import type { Server } from 'node:http';
+import request from 'supertest';
+import { JwtStrategy } from '../auth/strategies/jwt.strategy';
+import { ParrotSaleListingsController } from './parrot-sale-listings.controller';
+import { ReapplicationIntent } from '../seller-onboarding/seller-lifecycle';
+import { SellerOnboardingService } from '../seller-onboarding/seller-onboarding.service';
+import { AdminSellerOnboardingController } from '../seller-onboarding/admin-seller-onboarding.controller';
+import { SellerOnboardingController } from '../seller-onboarding/seller-onboarding.controller';
+import { AdminAuthGuard } from '../admin/guards/admin-auth.guard';
+import {
+  sellerUserResponse,
+  breederUserResponse,
+} from '../seller-onboarding/seller-onboarding.responses';
 import { HttpException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
@@ -124,6 +142,28 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
     await applyLedgerMigration();
     await applyLedgerMigration();
     await applyCleanupMigration();
+    // Seed a pre-migration revocation using the old schema. Its history and
+    // default BLOCKED intent must survive without granting reapplication.
+    const [legacy] = await source.query<Array<{ id: string }>>(
+      `INSERT INTO public.seller_verifications
+       ("userId", "firstName", "lastName", "birthDate", "consentAcceptedAt", "consentVersion",
+        status, "reviewedBy", "reviewedAt", "revokedAt", "revokedBy", "revocationReason")
+       VALUES ($1, 'Test', 'Seller', '2000-01-01', CURRENT_TIMESTAMP, 'v1',
+        'APPROVED', 'original-admin', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+        'revoking-admin', 'Legacy block') RETURNING id`,
+      [seedUser.id],
+    );
+    await applyReverificationMigration();
+    expect(
+      await source
+        .getRepository(SellerVerification)
+        .findOneByOrFail({ id: legacy.id }),
+    ).toMatchObject({
+      reviewedBy: 'original-admin',
+      revokedBy: 'revoking-admin',
+      revocationReason: 'Legacy block',
+      reapplicationIntent: ReapplicationIntent.BLOCKED,
+    });
   }, 60_000);
 
   afterAll(async () => {
@@ -939,6 +979,773 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
           .findOneByOrFail({ listingId })
       ).cleanupCompletedAt,
     ).toBeInstanceOf(Date);
+  });
+
+  function onboardingService() {
+    return new SellerOnboardingService(
+      source,
+      source.getRepository(SellerVerification),
+      source.getRepository(BreederApplication),
+      new SellerEligibilityPolicy(
+        source.getRepository(User),
+        source.getRepository(SellerVerification),
+      ),
+    );
+  }
+  const sellerInput = {
+    firstName: 'Test',
+    lastName: 'Seller',
+    birthDate: '2000-01-01',
+    consent: true,
+  };
+  const breederInput = {
+    breederName: 'Breeder',
+    city: 'Tehran',
+    species: ['African Grey'],
+    experienceYears: 1,
+    approximateBirdCount: 2,
+    preferredContactTime: 'Morning',
+  };
+  const listingInput = {
+    name: 'Test bird',
+    species: 'African Grey',
+    requestedPrice: 100,
+  };
+
+  async function approvedBreeder() {
+    const user = await eligibleUser('09333333333', UserRole.BREEDER);
+    const application = await source.getRepository(BreederApplication).save({
+      ...breederInput,
+      userId: user.id,
+      status: BreederApplicationStatus.APPROVED,
+      callOutcome: BreederCallOutcome.SUCCESSFUL,
+      contactedAt: new Date(),
+      reviewedBy: 'first-admin',
+      reviewedAt: new Date(),
+    });
+    return { user, application };
+  }
+
+  async function applyReverificationMigration(connection = source) {
+    const sql = await readFile(
+      resolve(
+        'scripts/migrations/20261019-add-seller-breeder-reverification-v1.sql',
+      ),
+      'utf8',
+    );
+    const runner = connection.createQueryRunner();
+    await runner.connect();
+    try {
+      await runner.query(sql.replace(/^\\set[^\r\n]*(?:\r?\n)?/, ''));
+    } catch (error) {
+      await runner.query('ROLLBACK');
+      throw error;
+    } finally {
+      await runner.release();
+    }
+  }
+
+  it('reverification migration reruns with compatible schema and preserves legacy blocked revocations', async () => {
+    const user = await eligibleUser();
+    const service = onboardingService();
+    const original = (await service.ownSeller(user.id))!;
+    await service.revokeSellerAccess(original.id, 'admin', {
+      reason: 'Legacy block',
+    });
+    await applyReverificationMigration();
+    await applyReverificationMigration();
+    const value = (await service.ownSeller(user.id))!;
+    expect(value.reapplicationIntent).toBe(ReapplicationIntent.BLOCKED);
+    await expect(
+      service.submitSeller(user.id, sellerInput),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'SELLER_ACCESS_REVOKED' },
+    });
+    expect(
+      await source
+        .getRepository(SellerVerification)
+        .count({ where: { userId: user.id } }),
+    ).toBe(1);
+  });
+
+  it.each(['column', 'CHECK', 'index', 'grant column', 'grant CHECK'])(
+    'reverification migration fails closed for an incompatible %s',
+    async (kind) => {
+      const runner = source.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        if (kind === 'grant column')
+          await runner.query(
+            'ALTER TABLE seller_verifications ALTER COLUMN "reapplicationGrantedBy" TYPE varchar(99)',
+          );
+        if (kind === 'grant CHECK') {
+          await runner.query(
+            'ALTER TABLE seller_verifications DROP CONSTRAINT "CHK_seller_reapplication_grant"',
+          );
+          await runner.query(
+            'ALTER TABLE seller_verifications ADD CONSTRAINT "CHK_seller_reapplication_grant" CHECK (true)',
+          );
+        }
+        if (kind === 'column')
+          await runner.query(
+            'ALTER TABLE seller_verifications ALTER COLUMN "reapplicationIntent" DROP NOT NULL',
+          );
+        if (kind === 'CHECK') {
+          await runner.query(
+            'ALTER TABLE seller_verifications DROP CONSTRAINT "CHK_seller_verifications_reverification"',
+          );
+          await runner.query(
+            'ALTER TABLE seller_verifications ADD CONSTRAINT "CHK_seller_verifications_reverification" CHECK (true)',
+          );
+        }
+        if (kind === 'index') {
+          await runner.query(
+            'DROP INDEX "UQ_seller_verifications_active_user"',
+          );
+          await runner.query(
+            `CREATE UNIQUE INDEX "UQ_seller_verifications_active_user" ON seller_verifications ("userId" NULLS FIRST) WHERE status='PENDING'`,
+          );
+        }
+        const sql = await readFile(
+          resolve(
+            'scripts/migrations/20261019-add-seller-breeder-reverification-v1.sql',
+          ),
+          'utf8',
+        );
+        await expect(
+          runner.query(sql.replace(/^\\set[^\r\n]*(?:\r?\n)?/, '')),
+        ).rejects.toThrow(/Incompatible/);
+      } finally {
+        await runner.rollbackTransaction();
+        await runner.release();
+      }
+      await applyReverificationMigration();
+    },
+  );
+
+  it('reverification creates a new seller row and a new approval supersedes revoked history', async () => {
+    const user = await eligibleUser();
+    const service = onboardingService();
+    const original = (await service.ownSeller(user.id))!;
+    await service.revokeSellerAccess(original.id, 'admin', {
+      reason: 'Renew identity',
+      intent: ReapplicationIntent.REQUIRE_REVERIFICATION,
+    });
+    expect(
+      sellerUserResponse((await service.ownSeller(user.id))!),
+    ).toMatchObject({
+      effectiveStatus: 'REVERIFICATION_REQUIRED',
+      canReapply: true,
+    });
+    const fresh = await service.submitSeller(user.id, sellerInput);
+    expect(fresh.id).not.toBe(original.id);
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).rejects.toMatchObject({ status: 403 });
+    await service.approveSeller(fresh.id, 'second-admin', {});
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).resolves.toBeDefined();
+    const historical = await source
+      .getRepository(SellerVerification)
+      .findOneByOrFail({ id: original.id });
+    expect(historical).toMatchObject({
+      status: 'APPROVED',
+      reviewedBy: original.reviewedBy,
+      revocationReason: 'Renew identity',
+    });
+    expect(
+      sellerUserResponse(await service.sellerDetail(original.id)).canReapply,
+    ).toBe(false);
+    await expect(
+      source
+        .getRepository(SellerVerification)
+        .update(original.id, { revocationReason: 'rewrite' }),
+    ).rejects.toThrow('immutable');
+  });
+
+  it('reverification breeder revocation demotes atomically and falls back to ledger quota immediately', async () => {
+    const { user, application } = await approvedBreeder();
+    const service = onboardingService();
+    await listingService().create(user.id, listingInput);
+    await listingService().create(user.id, listingInput);
+    await service.revokeBreeder(application.id, 'admin', {
+      reason: 'Renew breeder evidence',
+      intent: ReapplicationIntent.REQUIRE_REVERIFICATION,
+    });
+    expect(
+      (await source.getRepository(User).findOneByOrFail({ id: user.id })).role,
+    ).toBe(UserRole.CUSTOMER);
+    // A stale JWT can still say BREEDER: creation receives only its user ID and reads live DB state.
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'PARROT_LISTING_WEEKLY_LIMIT_REACHED' },
+    });
+    expect(
+      breederUserResponse((await service.ownBreeder(user.id))!),
+    ).toMatchObject({
+      effectiveStatus: 'REVERIFICATION_REQUIRED',
+      canReapply: true,
+    });
+    const fresh = await service.submitBreeder(user.id, breederInput);
+    await service.recordBreederCall(fresh.id, 'admin', {
+      outcome: BreederCallOutcome.SUCCESSFUL,
+    });
+    await service.approveBreeder(fresh.id, 'admin');
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).resolves.toBeDefined();
+    expect(
+      await source
+        .getRepository(ParrotSaleListingCreationLedger)
+        .count({ where: { sellerUserId: user.id } }),
+    ).toBe(3);
+    expect(
+      await source
+        .getRepository(BreederApplication)
+        .findOneByOrFail({ id: application.id }),
+    ).toMatchObject({
+      status: 'APPROVED',
+      reviewedBy: 'first-admin',
+      revocationReason: 'Renew breeder evidence',
+    });
+  });
+
+  it('reverification breeder-only block preserves seller eligibility but forbids another breeder application', async () => {
+    const { user, application } = await approvedBreeder();
+    const service = onboardingService();
+    await service.revokeBreeder(application.id, 'admin', {
+      reason: 'Breeder blocked',
+    });
+    await expect(
+      service.submitBreeder(user.id, breederInput),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'BREEDER_ACCESS_REVOKED' },
+    });
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).resolves.toBeDefined();
+    await expect(
+      service.revokeBreeder(application.id, 'admin', { reason: 'Again' }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('reverification seller revocation blocks a live breeder and pending breeder promotion', async () => {
+    const { user } = await approvedBreeder();
+    const service = onboardingService();
+    const seller = (await service.ownSeller(user.id))!;
+    await service.revokeSellerAccess(seller.id, 'admin', {
+      reason: 'Seller blocked',
+    });
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'SELLER_ACCESS_REVOKED' },
+    });
+    expect(
+      (await source.getRepository(User).findOneByOrFail({ id: user.id })).role,
+    ).toBe(UserRole.BREEDER);
+    const second = await eligibleUser('09444444444');
+    const pending = await service.submitBreeder(second.id, breederInput);
+    await service.recordBreederCall(pending.id, 'admin', {
+      outcome: BreederCallOutcome.SUCCESSFUL,
+    });
+    await service.revokeSellerAccess(
+      (await service.ownSeller(second.id))!.id,
+      'admin',
+      { reason: 'Seller blocked' },
+    );
+    await expect(
+      service.approveBreeder(pending.id, 'admin'),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(
+      (await source.getRepository(User).findOneByOrFail({ id: second.id }))
+        .role,
+    ).toBe(UserRole.CUSTOMER);
+  });
+
+  it('reverification inactive accounts cannot reapply or regain breeder privileges', async () => {
+    const { user, application } = await approvedBreeder();
+    const service = onboardingService();
+    await service.revokeBreeder(application.id, 'admin', {
+      reason: 'Reapply',
+      intent: ReapplicationIntent.REQUIRE_REVERIFICATION,
+    });
+    await source.getRepository(User).update(user.id, { isActive: false });
+    expect(
+      breederUserResponse((await service.ownBreeder(user.id))!).canReapply,
+    ).toBe(false);
+    await expect(
+      service.submitBreeder(user.id, breederInput),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      service.submitSeller(user.id, sellerInput),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('reverification concurrent seller reapplications allow only one new pending row', async () => {
+    const user = await eligibleUser();
+    const service = onboardingService();
+    await service.revokeSellerAccess(
+      (await service.ownSeller(user.id))!.id,
+      'admin',
+      { reason: 'Reapply', intent: ReapplicationIntent.REQUIRE_REVERIFICATION },
+    );
+    const results = await Promise.allSettled([
+      service.submitSeller(user.id, sellerInput),
+      service.submitSeller(user.id, sellerInput),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(
+      await source.getRepository(SellerVerification).count({
+        where: { userId: user.id, status: SellerVerificationStatus.PENDING },
+      }),
+    ).toBe(1);
+  });
+
+  it('reverification concurrent breeder revocations and reapplications cannot duplicate approvals or promotion', async () => {
+    const { user, application } = await approvedBreeder();
+    const service = onboardingService();
+    const results = await Promise.allSettled(
+      [0, 1].map(() =>
+        service.revokeBreeder(application.id, 'admin', {
+          reason: 'Renew',
+          intent: ReapplicationIntent.REQUIRE_REVERIFICATION,
+        }),
+      ),
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const attempts = await Promise.allSettled([
+      service.submitBreeder(user.id, breederInput),
+      service.submitBreeder(user.id, breederInput),
+    ]);
+    expect(attempts.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(
+      (await source.getRepository(User).findOneByOrFail({ id: user.id })).role,
+    ).toBe(UserRole.CUSTOMER);
+  });
+
+  it('reverification revocation failure rolls back both application and role', async () => {
+    const { user, application } = await approvedBreeder();
+    await source.query(
+      `CREATE FUNCTION public.test_fail_breeder_revoke() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."revokedAt" IS NOT NULL THEN RAISE EXCEPTION 'intentional revocation failure'; END IF; RETURN NEW; END $$`,
+    );
+    await source.query(
+      `CREATE TRIGGER test_fail_breeder_revoke BEFORE UPDATE ON breeder_applications FOR EACH ROW EXECUTE FUNCTION public.test_fail_breeder_revoke()`,
+    );
+    try {
+      await expect(
+        onboardingService().revokeBreeder(application.id, 'admin', {
+          reason: 'Renew',
+        }),
+      ).rejects.toThrow('intentional revocation failure');
+      expect(
+        (await source.getRepository(User).findOneByOrFail({ id: user.id }))
+          .role,
+      ).toBe(UserRole.BREEDER);
+      expect(
+        (
+          await source
+            .getRepository(BreederApplication)
+            .findOneByOrFail({ id: application.id })
+        ).revokedAt,
+      ).toBeNull();
+    } finally {
+      await source.query(
+        'DROP TRIGGER test_fail_breeder_revoke ON breeder_applications',
+      );
+      await source.query('DROP FUNCTION public.test_fail_breeder_revoke()');
+    }
+  });
+
+  it('reverification enforces live DB quota and seller block over a real HTTP request with an old BREEDER JWT', async () => {
+    const { user, application } = await approvedBreeder();
+    const secret = randomUUID() + randomUUID();
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        JwtModule.register({ secret }),
+        PassportModule.register({ defaultStrategy: 'jwt' }),
+      ],
+      controllers: [ParrotSaleListingsController],
+      providers: [
+        JwtStrategy,
+        { provide: ConfigService, useValue: { get: () => secret } },
+        { provide: ParrotSaleListingsService, useValue: listingService() },
+      ],
+    }).compile();
+    const app = moduleRef.createNestApplication({ logger: false });
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, transform: true }),
+    );
+    await app.init();
+    try {
+      const token = moduleRef
+        .get(JwtService)
+        .sign({ sub: user.id, phone: user.phone, role: 'breeder' });
+      const call = () =>
+        request(app.getHttpServer() as Server)
+          .post('/parrot-sale-listings')
+          .set('Authorization', `Bearer ${token}`)
+          .send(listingInput);
+      await call().expect(201);
+      await onboardingService().revokeBreeder(application.id, 'admin', {
+        reason: 'Renew',
+        intent: ReapplicationIntent.REQUIRE_REVERIFICATION,
+      });
+      await call().expect(201);
+      const quota = await call().expect(409);
+      expect((quota.body as { code: string }).code).toBe(
+        'PARROT_LISTING_WEEKLY_LIMIT_REACHED',
+      );
+      await onboardingService().revokeSellerAccess(
+        (await onboardingService().ownSeller(user.id))!.id,
+        'admin',
+        { reason: 'Block' },
+      );
+      const blocked = await call().expect(403);
+      expect((blocked.body as { code: string }).code).toBe(
+        'SELLER_ACCESS_REVOKED',
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reverification concurrent creation and breeder revocation share the seller lock without overselling quota', async () => {
+    const { user, application } = await approvedBreeder();
+    await listingService().create(user.id, listingInput);
+    const results = await Promise.allSettled([
+      onboardingService().revokeBreeder(application.id, 'admin', {
+        reason: 'Renew',
+      }),
+      listingService().create(user.id, listingInput),
+    ]);
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(
+      await source
+        .getRepository(ParrotSaleListingCreationLedger)
+        .count({ where: { sellerUserId: user.id } }),
+    ).toBe(2);
+  });
+
+  async function blockedSeller() {
+    const user = await eligibleUser();
+    const service = onboardingService();
+    const original = (await service.ownSeller(user.id))!;
+    await service.revokeSellerAccess(original.id, 'blocking-admin', {
+      reason: 'Original blocking decision',
+    });
+    return { user, service, original: (await service.ownSeller(user.id))! };
+  }
+
+  it('blocked recovery preserves immutable audit, never restores access, and permits exactly one concurrent new pending request', async () => {
+    const { user, service, original } = await blockedSeller();
+    const granted = await service.grantSellerReapplication(
+      original.id,
+      'recovery-admin',
+      { reason: 'Evidence checked' },
+    );
+    expect(granted).toMatchObject({
+      status: 'APPROVED',
+      revokedAt: original.revokedAt,
+      revokedBy: original.revokedBy,
+      revocationReason: original.revocationReason,
+      reapplicationIntent: 'BLOCKED',
+      reviewedAt: original.reviewedAt,
+      createdAt: original.createdAt,
+      reapplicationGrantedBy: 'recovery-admin',
+      reapplicationGrantReason: 'Evidence checked',
+    });
+    expect(granted.reapplicationGrantedAt).toBeInstanceOf(Date);
+    expect(sellerUserResponse(granted)).toMatchObject({
+      effectiveStatus: 'REVERIFICATION_REQUIRED',
+      canReapply: true,
+      reapplicationIntent: 'REQUIRE_REVERIFICATION',
+    });
+    expect(sellerUserResponse(granted)).not.toHaveProperty(
+      'reapplicationGrantedBy',
+    );
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).rejects.toMatchObject({ status: 403 });
+    const results = await Promise.allSettled([
+      service.submitSeller(user.id, sellerInput),
+      service.submitSeller(user.id, sellerInput),
+    ]);
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(
+      results.find((result) => result.status === 'rejected'),
+    ).toMatchObject({ reason: { status: 409 } });
+    expect(
+      await source
+        .getRepository(SellerVerification)
+        .countBy({ userId: user.id, status: SellerVerificationStatus.PENDING }),
+    ).toBe(1);
+    expect(
+      await source
+        .getRepository(SellerVerification)
+        .findOneByOrFail({ id: original.id }),
+    ).toMatchObject({
+      revokedAt: original.revokedAt,
+      revocationReason: original.revocationReason,
+      reapplicationIntent: 'BLOCKED',
+    });
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).rejects.toMatchObject({ status: 403 });
+    await service.approveSeller(
+      (await service.ownSeller(user.id))!.id,
+      'approval-admin',
+      {},
+    );
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).resolves.toBeDefined();
+    await applyReverificationMigration();
+  });
+
+  it('blocked recovery concurrent grants are append-once and SQL cannot rewrite original or recovery audit', async () => {
+    const { service, original } = await blockedSeller();
+    const results = await Promise.allSettled(
+      ['admin-a', 'admin-b'].map((actor) =>
+        service.grantSellerReapplication(original.id, actor, { reason: actor }),
+      ),
+    );
+    expect(
+      results.filter((result) => result.status === 'fulfilled'),
+    ).toHaveLength(1);
+    expect(
+      results.find((result) => result.status === 'rejected'),
+    ).toMatchObject({ reason: { status: 409 } });
+    const saved = await source
+      .getRepository(SellerVerification)
+      .findOneByOrFail({ id: original.id });
+    for (const column of ['revocationReason', 'reapplicationGrantReason']) {
+      await expect(
+        source.query(
+          `UPDATE seller_verifications SET "${column}"='rewritten' WHERE id=$1`,
+          [original.id],
+        ),
+      ).rejects.toMatchObject({ driverError: { code: '23514' } });
+    }
+    await expect(
+      service.grantSellerReapplication(original.id, 'admin-c', {
+        reason: 'Duplicate',
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(
+      await source
+        .getRepository(SellerVerification)
+        .findOneByOrFail({ id: original.id }),
+    ).toMatchObject({
+      reapplicationGrantedAt: saved.reapplicationGrantedAt,
+      reapplicationGrantedBy: saved.reapplicationGrantedBy,
+    });
+  });
+
+  it('blocked recovery never bypasses inactive accounts, current approval, or a later new block', async () => {
+    const { user, service, original } = await blockedSeller();
+    await source.getRepository(User).update(user.id, { isActive: false });
+    await expect(
+      service.grantSellerReapplication(original.id, 'admin', {
+        reason: 'Inactive',
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(
+      (await service.ownSeller(user.id))!.reapplicationGrantedAt,
+    ).toBeNull();
+    await source.getRepository(User).update(user.id, { isActive: true });
+    await service.grantSellerReapplication(original.id, 'admin', {
+      reason: 'Reviewed',
+    });
+    const fresh = await service.submitSeller(user.id, sellerInput);
+    await expect(
+      service.grantSellerReapplication(fresh.id, 'admin', {
+        reason: 'Pending',
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    await service.approveSeller(fresh.id, 'admin', {});
+    await expect(
+      service.grantSellerReapplication(fresh.id, 'admin', { reason: 'Active' }),
+    ).rejects.toMatchObject({ status: 409 });
+    await service.revokeSellerAccess(fresh.id, 'admin', {
+      reason: 'New block',
+    });
+    await expect(
+      service.grantSellerReapplication(original.id, 'admin', {
+        reason: 'Stale',
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    await expect(
+      service.submitSeller(user.id, sellerInput),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'SELLER_ACCESS_REVOKED' },
+    });
+  });
+
+  it('blocked recovery rollback leaves original block and no grant when save fails', async () => {
+    const { user, service, original } = await blockedSeller();
+    await source.query(`CREATE FUNCTION test_fail_seller_grant() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+      IF NEW."reapplicationGrantedAt" IS NOT NULL THEN RAISE EXCEPTION 'Deliberate grant failure'; END IF; RETURN NEW; END $$`);
+    await source.query(
+      'CREATE TRIGGER test_fail_seller_grant BEFORE UPDATE ON seller_verifications FOR EACH ROW EXECUTE FUNCTION test_fail_seller_grant()',
+    );
+    try {
+      await expect(
+        service.grantSellerReapplication(original.id, 'admin', {
+          reason: 'Reviewed',
+        }),
+      ).rejects.toThrow('Deliberate grant failure');
+      expect(
+        (await service.ownSeller(user.id))!.reapplicationGrantedAt,
+      ).toBeNull();
+      await expect(
+        service.submitSeller(user.id, sellerInput),
+      ).rejects.toMatchObject({ status: 403 });
+    } finally {
+      await source.query(
+        'DROP TRIGGER test_fail_seller_grant ON seller_verifications',
+      );
+      await source.query('DROP FUNCTION test_fail_seller_grant()');
+    }
+    await expect(
+      service.grantSellerReapplication(original.id, 'admin', {
+        reason: 'Retry',
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('blocked recovery serializes reapply and reblock races without restoring seller privileges', async () => {
+    const { user, service, original } = await blockedSeller();
+    const results = await Promise.allSettled([
+      service.grantSellerReapplication(original.id, 'recovery-admin', {
+        reason: 'Reviewed',
+      }),
+      service.revokeSellerAccess(original.id, 'blocking-admin', {
+        reason: 'Duplicate block',
+      }),
+      service.submitSeller(user.id, sellerInput),
+    ]);
+    expect(results[0].status).toBe('fulfilled');
+    expect(results[1]).toMatchObject({
+      status: 'rejected',
+      reason: { status: 409 },
+    });
+    expect(
+      await source
+        .getRepository(SellerVerification)
+        .countBy({ userId: user.id, status: SellerVerificationStatus.PENDING }),
+    ).toBeLessThanOrEqual(1);
+    await expect(
+      listingService().create(user.id, listingInput),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('blocked recovery real HTTP denies forged customer grants and authorizes only registered Admin', async () => {
+    const { user, service, original } = await blockedSeller();
+    const secret = randomUUID() + randomUUID();
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        JwtModule.register({ secret }),
+        PassportModule.register({ defaultStrategy: 'jwt' }),
+      ],
+      controllers: [
+        AdminSellerOnboardingController,
+        SellerOnboardingController,
+      ],
+      providers: [
+        JwtStrategy,
+        AdminAuthGuard,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'ADMIN_USERS'
+                ? 'test-admin'
+                : key === 'GOD_ADMIN_USERNAME'
+                  ? 'test-owner'
+                  : secret,
+          },
+        },
+        { provide: SellerOnboardingService, useValue: service },
+      ],
+    }).compile();
+    const app = moduleRef.createNestApplication({ logger: false });
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, transform: true }),
+    );
+    await app.init();
+    try {
+      const jwt = moduleRef.get(JwtService);
+      const customer = jwt.sign({
+        sub: user.id,
+        phone: user.phone,
+        role: 'customer',
+      });
+      const admin = jwt.sign({ scope: 'admin-panel', username: 'test-admin' });
+      const server = app.getHttpServer() as Server;
+      const path = `/admin-panel/seller-onboarding/verifications/${original.id}/grant-reapplication`;
+      await request(server)
+        .post('/seller-onboarding/verification')
+        .set('Authorization', `Bearer ${customer}`)
+        .send({
+          ...sellerInput,
+          reapplicationGrantedAt: new Date().toISOString(),
+          reapplicationIntent: 'REQUIRE_REVERIFICATION',
+        })
+        .expect(403);
+      for (const token of [
+        customer,
+        jwt.sign({ scope: 'god-admin-panel', username: 'test-owner' }),
+        jwt.sign({ scope: 'admin-panel', username: 'unregistered' }),
+      ]) {
+        await request(server)
+          .post(path)
+          .set('Authorization', `Bearer ${token}`)
+          .send({ reason: 'Bypass' })
+          .expect(401);
+      }
+      await request(server)
+        .post(path)
+        .set('Authorization', `Bearer ${admin}`)
+        .send({ reason: ' ' })
+        .expect(400);
+      await request(server)
+        .post(path)
+        .set('Authorization', `Bearer ${admin}`)
+        .send({
+          reason: 'Valid recovery',
+          userId: randomUUID(),
+          reapplicationGrantedBy: 'spoofed',
+        })
+        .expect(201);
+      expect((await service.ownSeller(user.id))!.reapplicationGrantedBy).toBe(
+        'test-admin',
+      );
+      const results = await Promise.all(
+        [1, 2].map(() =>
+          request(server)
+            .post('/seller-onboarding/verification')
+            .set('Authorization', `Bearer ${customer}`)
+            .send(sellerInput),
+        ),
+      );
+      expect(results.map((result) => result.status).sort()).toEqual([201, 409]);
+    } finally {
+      await app.close();
+    }
   });
 
   async function withPrivateStorage<T>(

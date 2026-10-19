@@ -1,3 +1,4 @@
+import { ReapplicationIntent } from './seller-lifecycle';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtService } from '@nestjs/jwt';
@@ -77,11 +78,13 @@ describe('Admin seller onboarding HTTP authorization', () => {
     approveSeller: jest.fn(),
     rejectSeller: jest.fn(),
     revokeSellerAccess: jest.fn(),
+    grantSellerReapplication: jest.fn(),
     listBreeders: jest.fn(),
     breederDetail: jest.fn(),
     recordBreederCall: jest.fn(),
     approveBreeder: jest.fn(),
     rejectBreeder: jest.fn(),
+    revokeBreeder: jest.fn(),
   };
 
   beforeAll(async () => {
@@ -123,6 +126,14 @@ describe('Admin seller onboarding HTTP authorization', () => {
     onboarding.recordBreederCall.mockResolvedValue(breeder);
     onboarding.approveBreeder.mockResolvedValue(breeder);
     onboarding.rejectBreeder.mockResolvedValue(breeder);
+    onboarding.revokeBreeder.mockResolvedValue({
+      ...breeder,
+      status: BreederApplicationStatus.APPROVED,
+      revokedAt: new Date(),
+      revokedBy: adminUsernames[0],
+      revocationReason: 'Renew evidence',
+      reapplicationIntent: ReapplicationIntent.REQUIRE_REVERIFICATION,
+    });
   });
 
   afterAll(async () => app?.close());
@@ -215,6 +226,72 @@ describe('Admin seller onboarding HTTP authorization', () => {
     expect(onboarding.listSellers).toHaveBeenCalledTimes(5);
   });
 
+  it('grants only reason and authenticated admin identity, ignoring spoofed audit/access fields', async () => {
+    onboarding.grantSellerReapplication.mockResolvedValue({
+      ...seller,
+      status: SellerVerificationStatus.APPROVED,
+      revokedAt: new Date(),
+      reapplicationIntent: ReapplicationIntent.BLOCKED,
+      reapplicationGrantedAt: new Date(),
+      reapplicationGrantedBy: adminUsernames[0],
+      reapplicationGrantReason: 'Reviewed recovery',
+    });
+    const response = await request(server)
+      .post(
+        `/admin-panel/seller-onboarding/verifications/${id}/grant-reapplication`,
+      )
+      .set('Authorization', adminBearer())
+      .send({
+        reason: ' Reviewed recovery ',
+        userId: randomUUID(),
+        status: 'APPROVED',
+        reapplicationGrantedBy: 'spoofed',
+        reapplicationGrantedAt: '2000-01-01',
+      })
+      .expect(201);
+    expect(onboarding.grantSellerReapplication).toHaveBeenCalledWith(
+      id,
+      adminUsernames[0],
+      { reason: 'Reviewed recovery' },
+    );
+    expect(response.body as unknown).toMatchObject({
+      effectiveStatus: 'REVERIFICATION_REQUIRED',
+      reapplicationIntent: 'REQUIRE_REVERIFICATION',
+      originalReapplicationIntent: 'BLOCKED',
+      reapplicationGrantedBy: adminUsernames[0],
+    });
+  });
+
+  it.each([
+    undefined,
+    { role: 'customer', sub: id },
+    { role: 'breeder', sub: id },
+    { scope: 'god-admin-panel', username: 'owner-fixture' },
+  ])('denies direct recovery bypass %#', async (payload) => {
+    const call = request(server)
+      .post(
+        `/admin-panel/seller-onboarding/verifications/${id}/grant-reapplication`,
+      )
+      .send({ reason: 'Reason' });
+    if (payload) call.set('Authorization', bearer(payload));
+    await call.expect(401);
+    expect(onboarding.grantSellerReapplication).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { reason: ' ' }, { reason: true }, { reason: 'x'.repeat(501) }])(
+    'validates recovery reason %#',
+    async (input) => {
+      await request(server)
+        .post(
+          `/admin-panel/seller-onboarding/verifications/${id}/grant-reapplication`,
+        )
+        .set('Authorization', adminBearer())
+        .send(input)
+        .expect(400);
+      expect(onboarding.grantSellerReapplication).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     ['missing', undefined],
     ['customer', { sub: randomUUID(), phone: '09120000000', role: 'customer' }],
@@ -241,5 +318,62 @@ describe('Admin seller onboarding HTTP authorization', () => {
       .set('Authorization', adminBearer())
       .expect(404);
     expect(onboarding.listSellers).not.toHaveBeenCalled();
+  });
+  it('accepts explicit seller re-verification intent without changing the default revoke contract', async () => {
+    await request(server)
+      .post(`/admin-panel/seller-onboarding/verifications/${id}/revoke`)
+      .set('Authorization', adminBearer())
+      .send({ reason: 'Renew identity', intent: 'REQUIRE_REVERIFICATION' })
+      .expect(201);
+    expect(onboarding.revokeSellerAccess).toHaveBeenCalledWith(
+      id,
+      adminUsernames[0],
+      { reason: 'Renew identity', intent: 'REQUIRE_REVERIFICATION' },
+    );
+  });
+  it('exposes breeder revoke only to configured admins with strict allowlisted output', async () => {
+    const response = await request(server)
+      .post(`/admin-panel/seller-onboarding/breeder-applications/${id}/revoke`)
+      .set('Authorization', adminBearer())
+      .send({ reason: 'Renew evidence', intent: 'REQUIRE_REVERIFICATION' })
+      .expect(201);
+    expect(onboarding.revokeBreeder).toHaveBeenCalledWith(
+      id,
+      adminUsernames[0],
+      { reason: 'Renew evidence', intent: 'REQUIRE_REVERIFICATION' },
+    );
+    const body = response.body as {
+      effectiveStatus: string;
+      revokedBy: string;
+      privateCallNote: string | null;
+      user: Record<string, unknown>;
+    };
+    expect(body.effectiveStatus).toBe('REVERIFICATION_REQUIRED');
+    expect(body.user).not.toHaveProperty('nationalId');
+  });
+  it.each([
+    undefined,
+    { role: 'customer', sub: id },
+    { role: 'breeder', sub: id },
+    { scope: 'god-admin-panel', role: 'owner', username: 'owner-fixture' },
+  ])('denies non-admin breeder revocation %#', async (payload) => {
+    const call = request(server)
+      .post(`/admin-panel/seller-onboarding/breeder-applications/${id}/revoke`)
+      .send({ reason: 'Forbidden' });
+    if (payload) call.set('Authorization', bearer(payload));
+    await call.expect(401);
+    expect(onboarding.revokeBreeder).not.toHaveBeenCalled();
+  });
+  it.each([
+    { reason: ' ' },
+    { reason: 'Reason', intent: true },
+    { reason: 'Reason', intent: 'ALLOW_ANYTHING' },
+  ])('rejects invalid breeder revoke input %#', async (input) => {
+    await request(server)
+      .post(`/admin-panel/seller-onboarding/breeder-applications/${id}/revoke`)
+      .set('Authorization', adminBearer())
+      .send(input)
+      .expect(400);
+    expect(onboarding.revokeBreeder).not.toHaveBeenCalled();
   });
 });

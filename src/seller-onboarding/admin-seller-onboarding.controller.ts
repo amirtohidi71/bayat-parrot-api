@@ -13,6 +13,7 @@ import type { AdminTokenPayload } from '../admin/guards/admin-auth.guard';
 import { AdminAuthGuard } from '../admin/guards/admin-auth.guard';
 import {
   AdminBreederCallDto,
+  AdminGrantSellerReapplicationDto,
   AdminNoteDto,
   AdminRejectDto,
   AdminRevokeSellerAccessDto,
@@ -81,6 +82,21 @@ export class AdminSellerOnboardingController {
     );
   }
 
+  @Post('verifications/:id/grant-reapplication')
+  async grantReapplication(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() input: AdminGrantSellerReapplicationDto,
+    @Req() request: AdminRequest,
+  ) {
+    return sellerAdminResponse(
+      await this.onboarding.grantSellerReapplication(
+        id,
+        request.admin.username,
+        input,
+      ),
+    );
+  }
+
   @Get('breeder-applications')
   async listBreeders(@Query() query: ListBreederApplicationsDto) {
     return (await this.onboarding.listBreeders(query.status)).map(
@@ -126,6 +142,17 @@ export class AdminSellerOnboardingController {
   ) {
     return breederAdminResponse(
       await this.onboarding.rejectBreeder(id, request.admin.username, input),
+    );
+  }
+
+  @Post('breeder-applications/:id/revoke')
+  async revokeBreeder(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() input: AdminRevokeSellerAccessDto,
+    @Req() request: AdminRequest,
+  ) {
+    return breederAdminResponse(
+      await this.onboarding.revokeBreeder(id, request.admin.username, input),
     );
   }
 }

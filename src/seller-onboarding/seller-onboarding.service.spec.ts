@@ -14,6 +14,7 @@ import {
 } from './entities/seller-verification.entity';
 import { SellerErrorCode } from './seller-onboarding.constants';
 import { SellerOnboardingService } from './seller-onboarding.service';
+import { ReapplicationIntent } from './seller-lifecycle';
 
 function entityRepository() {
   return {
@@ -34,6 +35,7 @@ function setup() {
   const txListings = entityRepository();
   const txProducts = entityRepository();
   const manager = {
+    query: jest.fn().mockResolvedValue([]),
     getRepository: jest.fn((entity) => {
       if (entity.name === 'User') return txUsers;
       if (entity.name === 'SellerVerification') return txSellers;
@@ -47,6 +49,10 @@ function setup() {
   };
   const eligibility = {
     assertEligibleSeller: jest.fn(),
+    assertEligibleSellerInTransaction: jest.fn(),
+    canSubmitParrotSaleListingInTransaction: jest
+      .fn()
+      .mockResolvedValue({ eligible: true }),
     assertEligibleForBreederPromotion: jest.fn(),
   };
   const service = new SellerOnboardingService(
@@ -93,6 +99,79 @@ describe('SellerOnboardingService security and transitions', () => {
     isActive: true,
     phoneVerifiedAt: new Date(),
   };
+
+  it('grants recovery atomically using advisory, verification, then live User locks, preserving blocking audit', async () => {
+    const value = setup();
+    const blocked = {
+      id: 'verification-1',
+      userId: activeUser.id,
+      birthDate: '2000-01-01',
+      status: SellerVerificationStatus.APPROVED,
+      revokedAt: new Date('2026-01-01'),
+      revokedBy: 'original-admin',
+      revocationReason: 'Original block',
+      reapplicationIntent: ReapplicationIntent.BLOCKED,
+      reapplicationGrantedAt: null,
+    };
+    value.txSellers.findOne.mockResolvedValue(blocked);
+    value.txUsers.findOne.mockResolvedValue(activeUser);
+    const now = new Date();
+    value.manager.query.mockResolvedValue([{ now }]);
+    const result = await value.service.grantSellerReapplication(
+      blocked.id,
+      'recovery-admin',
+      { reason: ' Reviewed evidence ' },
+    );
+    expect(result).toMatchObject({
+      revokedBy: 'original-admin',
+      revocationReason: 'Original block',
+      revokedAt: new Date('2026-01-01'),
+      reapplicationIntent: 'BLOCKED',
+      reapplicationGrantedAt: now,
+      reapplicationGrantedBy: 'recovery-admin',
+      reapplicationGrantReason: 'Reviewed evidence',
+    });
+    expect(value.txSellers.findOne).toHaveBeenNthCalledWith(2, {
+      where: { id: blocked.id },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(value.manager.query.mock.invocationCallOrder[0]).toBeLessThan(
+      value.txSellers.findOne.mock.invocationCallOrder[1],
+    );
+    expect(value.txSellers.findOne.mock.invocationCallOrder[1]).toBeLessThan(
+      value.txUsers.findOne.mock.invocationCallOrder[0],
+    );
+    expect(value.txUsers.findOne).toHaveBeenCalledWith({
+      where: { id: activeUser.id },
+      lock: { mode: 'pessimistic_write' },
+    });
+    expect(value.sellers.save).not.toHaveBeenCalled();
+    await expectInvalidTransition(
+      value.service.grantSellerReapplication(blocked.id, 'other-admin', {
+        reason: 'Duplicate',
+      }),
+    );
+    expect(value.txSellers.save).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['PENDING', 'REJECTED', 'APPROVED'])(
+    'never grants recovery to a nonrevoked %s record',
+    async (status) => {
+      const value = setup();
+      value.txSellers.findOne.mockResolvedValue({
+        id: 'v',
+        userId: activeUser.id,
+        status,
+        revokedAt: null,
+      });
+      await expectInvalidTransition(
+        value.service.grantSellerReapplication('v', 'admin', {
+          reason: 'Reason',
+        }),
+      );
+      expect(value.txSellers.save).not.toHaveBeenCalled();
+    },
+  );
 
   it('requires true seller consent and ignores client-controlled status/role fields', async () => {
     const value = setup();
@@ -151,7 +230,8 @@ describe('SellerOnboardingService security and transitions', () => {
     expect(value.sellers.save).not.toHaveBeenCalled();
     expect(value.sellers.findOne).toHaveBeenCalledWith({
       where: { userId: 'user-1' },
-      order: { createdAt: 'DESC' },
+      relations: { user: true },
+      order: { createdAt: 'DESC', id: 'DESC' },
     });
   });
 
@@ -280,7 +360,9 @@ describe('SellerOnboardingService security and transitions', () => {
     const value = setup();
     const user = { ...activeUser };
     value.txUsers.findOne.mockResolvedValue(user);
-    value.txSellers.exists.mockResolvedValue(true);
+    value.txSellers.exists
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
     await expect(
       value.service.submitSeller('user-1', {
         firstName: 'Changed',
@@ -397,6 +479,7 @@ describe('SellerOnboardingService security and transitions', () => {
 
   it('submits a breeder application only through the strict promotion policy', async () => {
     const value = setup();
+    value.txUsers.findOne.mockResolvedValue({ ...activeUser });
     value.eligibility.assertEligibleForBreederPromotion.mockResolvedValue({
       user: activeUser,
       verification: { status: SellerVerificationStatus.APPROVED },
@@ -417,8 +500,12 @@ describe('SellerOnboardingService security and transitions', () => {
     });
 
     expect(
-      value.eligibility.assertEligibleForBreederPromotion,
-    ).toHaveBeenCalledWith('user-1');
+      value.eligibility.assertEligibleSellerInTransaction,
+    ).toHaveBeenCalledWith('user-1', value.manager);
+    expect(value.txUsers.findOne).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      lock: { mode: 'pessimistic_write' },
+    });
     expect(value.eligibility.assertEligibleSeller).not.toHaveBeenCalled();
   });
 
@@ -884,5 +971,46 @@ describe('SellerOnboardingService security and transitions', () => {
     expect(application.status).toBe(BreederApplicationStatus.FOLLOW_UP);
     expect(value.txUsers.save).toHaveBeenCalledTimes(1);
     expect(value.breeders.save).not.toHaveBeenCalled();
+  });
+  it('rejects blocked seller reapplication before creating or changing identity data', async () => {
+    const value = setup();
+    value.txUsers.findOne.mockResolvedValue({ ...activeUser });
+    value.txSellers.exists.mockResolvedValue(true);
+    await expect(
+      value.service.submitSeller(activeUser.id, {
+        firstName: 'Changed',
+        lastName: 'Changed',
+        birthDate: '2000-01-01',
+        consent: true,
+      }),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'SELLER_ACCESS_REVOKED' },
+    });
+    expect(value.txUsers.save).not.toHaveBeenCalled();
+    expect(value.txSellers.save).not.toHaveBeenCalled();
+  });
+  it('never demotes ADMIN while revoking a breeder application', async () => {
+    const value = setup();
+    value.txBreeders.findOne.mockResolvedValue({
+      id: 'application-1',
+      userId: activeUser.id,
+      status: 'APPROVED',
+      revokedAt: null,
+    });
+    value.txUsers.findOne.mockResolvedValue({
+      ...activeUser,
+      role: UserRole.ADMIN,
+    });
+    await expect(
+      value.service.revokeBreeder('application-1', 'admin', {
+        reason: 'Renew',
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'BREEDER_BASE_ROLE_REQUIRED' },
+    });
+    expect(value.txUsers.save).not.toHaveBeenCalled();
+    expect(value.txBreeders.save).not.toHaveBeenCalled();
   });
 });

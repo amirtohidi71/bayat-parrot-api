@@ -1,6 +1,14 @@
 import { HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, QueryFailedError, Repository } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  In,
+  IsNull,
+  Not,
+  QueryFailedError,
+  Repository,
+} from 'typeorm';
 import { Product, ProductStatus } from '../products/entities/product.entity';
 import {
   ParrotSaleListing,
@@ -9,6 +17,7 @@ import {
 import { User, UserRole, isCustomerRole } from '../users/entities/user.entity';
 import {
   AdminBreederCallDto,
+  AdminGrantSellerReapplicationDto,
   AdminNoteDto,
   AdminRejectDto,
   AdminRevokeSellerAccessDto,
@@ -31,6 +40,7 @@ import {
   SellerErrorCode,
 } from './seller-onboarding.constants';
 import { onboardingError } from './seller-onboarding.errors';
+import { lockSellerLifecycle, ReapplicationIntent } from './seller-lifecycle';
 
 const sellerActive = [
   SellerVerificationStatus.PENDING,
@@ -67,10 +77,12 @@ export class SellerOnboardingService {
         const users = manager.getRepository(User);
         const verifications = manager.getRepository(SellerVerification);
         // Submission lock order is always user first; the verification is new.
+        await lockSellerLifecycle(manager, userId);
         const user = await this.lockedUserForSubmission(users, userId);
+        await this.assertReapplicationAllowed(verifications, userId, false);
         if (
           await verifications.exists({
-            where: { userId, status: In(sellerActive) },
+            where: { userId, status: In(sellerActive), revokedAt: IsNull() },
           })
         )
           this.activeSellerConflict();
@@ -100,6 +112,7 @@ export class SellerOnboardingService {
           revokedAt: null,
           revokedBy: null,
           revocationReason: null,
+          reapplicationIntent: ReapplicationIntent.BLOCKED,
         });
         return verifications.save(verification);
       });
@@ -112,20 +125,26 @@ export class SellerOnboardingService {
   ownSeller(userId: string) {
     return this.sellers.findOne({
       where: { userId },
-      order: { createdAt: 'DESC' },
+      relations: { user: true },
+      order: { createdAt: 'DESC', id: 'DESC' },
     });
   }
 
-  listSellers(status?: SellerVerificationStatus) {
-    return this.sellers.find({
+  async listSellers(status?: SellerVerificationStatus) {
+    const values = await this.sellers.find({
       where: status ? { status } : {},
       relations: { user: true },
       order: { createdAt: 'DESC' },
     });
+    for (const value of values)
+      value.isCurrent = (await this.ownSeller(value.userId))?.id === value.id;
+    return values;
   }
 
-  sellerDetail(id: string) {
-    return this.requiredSeller(id, true);
+  async sellerDetail(id: string) {
+    const value = await this.requiredSeller(id, true);
+    value.isCurrent = (await this.ownSeller(value.userId))?.id === value.id;
+    return value;
   }
 
   approveSeller(id: string, admin: string, note: AdminNoteDto) {
@@ -156,6 +175,7 @@ export class SellerOnboardingService {
       const initial = await verifications.findOne({ where: { id } });
       if (!initial)
         throw new NotFoundException('Seller verification not found');
+      await lockSellerLifecycle(manager, initial.userId);
 
       // Stable lock order: all seller listings, verification, then linked products.
       const listings = await manager.getRepository(ParrotSaleListing).find({
@@ -163,7 +183,12 @@ export class SellerOnboardingService {
         order: { id: 'ASC' },
         lock: { mode: 'pessimistic_write' },
       });
-      const verification = await this.lockedSeller(verifications, id);
+      const verification = await verifications.findOne({
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!verification)
+        throw new NotFoundException('Seller verification not found');
       if (
         verification.userId !== initial.userId ||
         verification.status !== SellerVerificationStatus.APPROVED
@@ -202,6 +227,8 @@ export class SellerOnboardingService {
       verification.revokedAt = new Date();
       verification.revokedBy = reviewedBy;
       verification.revocationReason = reason;
+      verification.reapplicationIntent =
+        input.intent ?? ReapplicationIntent.BLOCKED;
       const saved = await verifications.save(verification);
       saved.user = await this.requiredUser(
         manager.getRepository(User),
@@ -212,60 +239,144 @@ export class SellerOnboardingService {
   }
 
   async submitBreeder(userId: string, input: SubmitBreederApplicationDto) {
-    const { user } =
-      await this.eligibility.assertEligibleForBreederPromotion(userId);
-    if (
-      await this.breeders.exists({
-        where: { userId, status: In(breederActive) },
-      })
-    )
-      this.activeBreederConflict();
     try {
-      return await this.breeders.save(
-        this.breeders.create({
-          breederName: input.breederName,
-          city: input.city,
-          species: input.species,
-          experienceYears: input.experienceYears,
-          approximateBirdCount: input.approximateBirdCount,
-          preferredContactTime: input.preferredContactTime,
-          instagramUrl: input.instagramUrl ?? null,
-          websiteUrl: input.websiteUrl ?? null,
-          description: input.description ?? null,
+      return await this.dataSource.transaction(async (manager) => {
+        await lockSellerLifecycle(manager, userId);
+        const user = await this.lockedUserForSubmission(
+          manager.getRepository(User),
           userId,
-          user,
-          status: BreederApplicationStatus.PENDING_CALL,
-          callOutcome: null,
-          contactedAt: null,
-          privateCallNote: null,
-          rejectionReason: null,
-          reviewedBy: null,
-          reviewedAt: null,
-        }),
-      );
+        );
+        if (user.role !== UserRole.CUSTOMER) {
+          throw onboardingError(
+            HttpStatus.FORBIDDEN,
+            SellerErrorCode.BREEDER_BASE_ROLE_REQUIRED,
+            'فقط کاربر عادی واجد شرایط می‌تواند درخواست پرورش‌دهنده ثبت کند.',
+          );
+        }
+        await this.eligibility.assertEligibleSellerInTransaction(
+          userId,
+          manager,
+        );
+        const applications = manager.getRepository(BreederApplication);
+        await this.assertReapplicationAllowed(applications, userId, true);
+        if (
+          await applications.exists({
+            where: { userId, status: In(breederActive), revokedAt: IsNull() },
+          })
+        )
+          this.activeBreederConflict();
+        return applications.save(
+          applications.create({
+            breederName: input.breederName,
+            city: input.city,
+            species: input.species,
+            experienceYears: input.experienceYears,
+            approximateBirdCount: input.approximateBirdCount,
+            preferredContactTime: input.preferredContactTime,
+            instagramUrl: input.instagramUrl ?? null,
+            websiteUrl: input.websiteUrl ?? null,
+            description: input.description ?? null,
+            userId,
+            user,
+            status: BreederApplicationStatus.PENDING_CALL,
+            callOutcome: null,
+            contactedAt: null,
+            privateCallNote: null,
+            rejectionReason: null,
+            reviewedBy: null,
+            reviewedAt: null,
+            revokedAt: null,
+            revokedBy: null,
+            revocationReason: null,
+            reapplicationIntent: ReapplicationIntent.BLOCKED,
+          }),
+        );
+      });
     } catch (error) {
       if (this.postgresCode(error) === '23505') this.activeBreederConflict();
       throw error;
     }
   }
 
-  ownBreeder(userId: string) {
-    return this.breeders.findOne({
-      where: { userId },
-      order: { createdAt: 'DESC' },
+  async revokeBreeder(
+    id: string,
+    admin: string,
+    input: AdminRevokeSellerAccessDto,
+  ) {
+    return this.dataSource.transaction(async (manager) => {
+      const applications = manager.getRepository(BreederApplication);
+      const application = await this.lockedBreeder(applications, id, manager);
+      if (application.status !== BreederApplicationStatus.APPROVED)
+        this.invalidTransition();
+      if (application.revokedAt)
+        throw onboardingError(
+          HttpStatus.CONFLICT,
+          SellerErrorCode.BREEDER_ACCESS_ALREADY_REVOKED,
+          'تأیید پرورش‌دهندگی قبلاً لغو شده است.',
+        );
+      const users = manager.getRepository(User);
+      const user = await users.findOne({
+        where: { id: application.userId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user || user.role !== UserRole.BREEDER)
+        throw onboardingError(
+          HttpStatus.CONFLICT,
+          SellerErrorCode.BREEDER_BASE_ROLE_REQUIRED,
+          'نقش فعلی کاربر برای لغو پرورش‌دهندگی معتبر نیست.',
+        );
+      application.revokedAt = new Date();
+      application.revokedBy = this.admin(admin);
+      application.revocationReason = input.reason.trim();
+      application.reapplicationIntent =
+        input.intent ?? ReapplicationIntent.BLOCKED;
+      user.role = UserRole.CUSTOMER;
+      await users.save(user);
+      const saved = await applications.save(application);
+      saved.user = user;
+      saved.sellerAccessEligible = (
+        await this.eligibility.canSubmitParrotSaleListingInTransaction(
+          user.id,
+          manager,
+        )
+      ).eligible;
+      return saved;
     });
   }
 
-  listBreeders(status?: BreederApplicationStatus) {
-    return this.breeders.find({
+  async ownBreeder(userId: string) {
+    const value = await this.breeders.findOne({
+      where: { userId },
+      relations: { user: true },
+      order: { createdAt: 'DESC', id: 'DESC' },
+    });
+    if (value)
+      value.sellerAccessEligible = (
+        await this.eligibility.canSubmitParrotSaleListing(userId)
+      ).eligible;
+    return value;
+  }
+
+  async listBreeders(status?: BreederApplicationStatus) {
+    const values = await this.breeders.find({
       where: status ? { status } : {},
       relations: { user: true },
       order: { createdAt: 'DESC' },
     });
+    for (const value of values) {
+      const current = await this.ownBreeder(value.userId);
+      value.isCurrent = current?.id === value.id;
+      value.sellerAccessEligible = current?.sellerAccessEligible;
+    }
+    return values;
   }
 
-  breederDetail(id: string) {
-    return this.requiredBreeder(id, true);
+  async breederDetail(id: string) {
+    const value = await this.requiredBreeder(id, true);
+    const current = await this.ownBreeder(value.userId);
+    value.isCurrent = current?.id === value.id;
+    value.sellerAccessEligible = current?.sellerAccessEligible;
+    return value;
   }
 
   async recordBreederCall(
@@ -275,7 +386,7 @@ export class SellerOnboardingService {
   ) {
     return this.dataSource.transaction(async (manager) => {
       const applications = manager.getRepository(BreederApplication);
-      const application = await this.lockedBreeder(applications, id);
+      const application = await this.lockedBreeder(applications, id, manager);
       if (
         ![
           BreederApplicationStatus.PENDING_CALL,
@@ -301,7 +412,7 @@ export class SellerOnboardingService {
     return this.dataSource.transaction(async (manager) => {
       const applications = manager.getRepository(BreederApplication);
       // Keep the lock order stable across approvals: application first, user second.
-      const application = await this.lockedBreeder(applications, id);
+      const application = await this.lockedBreeder(applications, id, manager);
       if (application.status !== BreederApplicationStatus.FOLLOW_UP)
         this.invalidTransition();
       if (
@@ -333,21 +444,11 @@ export class SellerOnboardingService {
           'نقش فعلی کاربر برای تأیید پرورش‌دهنده معتبر نیست.',
         );
       }
-      const seller = await manager.getRepository(SellerVerification).findOne({
-        where: {
-          userId: user.id,
-          status: SellerVerificationStatus.APPROVED,
-        },
-        order: { createdAt: 'DESC' },
-      });
-      if (!seller || !user.phoneVerifiedAt) {
-        throw onboardingError(
-          HttpStatus.FORBIDDEN,
-          SellerErrorCode.VERIFICATION_REQUIRED,
-          'احراز فروشندگی معتبر برای تأیید پرورش‌دهنده لازم است.',
-        );
-      }
-      assertAdultBirthDate(seller.birthDate);
+      await this.eligibility.assertEligibleSellerInTransaction(
+        user.id,
+        manager,
+      );
+      await this.assertReapplicationAllowed(applications, user.id, true);
       application.status = BreederApplicationStatus.APPROVED;
       application.reviewedBy = this.admin(admin);
       application.reviewedAt = new Date();
@@ -363,7 +464,7 @@ export class SellerOnboardingService {
   async rejectBreeder(id: string, admin: string, input: AdminRejectDto) {
     return this.dataSource.transaction(async (manager) => {
       const applications = manager.getRepository(BreederApplication);
-      const application = await this.lockedBreeder(applications, id);
+      const application = await this.lockedBreeder(applications, id, manager);
       if (
         ![
           BreederApplicationStatus.PENDING_CALL,
@@ -394,9 +495,17 @@ export class SellerOnboardingService {
   ) {
     return this.dataSource.transaction(async (manager) => {
       const verifications = manager.getRepository(SellerVerification);
-      const verification = await this.lockedSeller(verifications, id);
-      if (verification.status !== SellerVerificationStatus.PENDING)
+      const verification = await this.lockedSeller(verifications, id, manager);
+      if (
+        verification.status !== SellerVerificationStatus.PENDING ||
+        verification.revokedAt
+      )
         this.invalidTransition();
+      await this.assertReapplicationAllowed(
+        verifications,
+        verification.userId,
+        false,
+      );
       const user = await manager.getRepository(User).findOne({
         where: { id: verification.userId },
         lock: { mode: 'pessimistic_write' },
@@ -432,7 +541,11 @@ export class SellerOnboardingService {
   private async lockedSeller(
     verifications: Repository<SellerVerification>,
     id: string,
+    manager: EntityManager,
   ) {
+    const initial = await verifications.findOne({ where: { id } });
+    if (!initial) throw new NotFoundException('Seller verification not found');
+    await lockSellerLifecycle(manager, initial.userId);
     const value = await verifications.findOne({
       where: { id },
       lock: { mode: 'pessimistic_write' },
@@ -453,7 +566,11 @@ export class SellerOnboardingService {
   private async lockedBreeder(
     applications: Repository<BreederApplication>,
     id: string,
+    manager: EntityManager,
   ) {
+    const initial = await applications.findOne({ where: { id } });
+    if (!initial) throw new NotFoundException('Breeder application not found');
+    await lockSellerLifecycle(manager, initial.userId);
     const value = await applications.findOne({
       where: { id },
       lock: { mode: 'pessimistic_write' },
@@ -491,6 +608,102 @@ export class SellerOnboardingService {
       );
     }
     return user;
+  }
+
+  async grantSellerReapplication(
+    id: string,
+    admin: string,
+    input: AdminGrantSellerReapplicationDto,
+  ) {
+    const actor = this.admin(admin);
+    const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+    if (!reason || reason.length > 500) {
+      throw onboardingError(
+        HttpStatus.BAD_REQUEST,
+        SellerErrorCode.INVALID_TRANSITION,
+        'دلیل اعطای اجازه درخواست مجدد الزامی است.',
+      );
+    }
+    return this.dataSource.transaction(async (manager) => {
+      const verifications = manager.getRepository(SellerVerification);
+      const verification = await this.lockedSeller(verifications, id, manager);
+      if (
+        verification.status !== SellerVerificationStatus.APPROVED ||
+        !verification.revokedAt ||
+        verification.reapplicationIntent !== ReapplicationIntent.BLOCKED ||
+        verification.reapplicationGrantedAt
+      )
+        this.invalidTransition();
+      const current = await verifications.findOne({
+        where: { userId: verification.userId },
+        order: { createdAt: 'DESC', id: 'DESC' },
+      });
+      if (
+        current?.id !== id ||
+        (await verifications.exists({
+          where: {
+            userId: verification.userId,
+            status: In([
+              SellerVerificationStatus.PENDING,
+              SellerVerificationStatus.APPROVED,
+            ]),
+            revokedAt: IsNull(),
+          },
+        }))
+      )
+        this.invalidTransition();
+      if (
+        await verifications.exists({
+          where: {
+            userId: verification.userId,
+            id: Not(id),
+            revokedAt: Not(IsNull()),
+            reapplicationIntent: ReapplicationIntent.BLOCKED,
+            reapplicationGrantedAt: IsNull(),
+          },
+        })
+      )
+        this.invalidTransition();
+      const user = await this.lockedUserForSubmission(
+        manager.getRepository(User),
+        verification.userId,
+      );
+      assertAdultBirthDate(verification.birthDate);
+      const rows = await manager.query<{ now: Date }[]>(
+        'SELECT clock_timestamp() AS now',
+      );
+      verification.reapplicationGrantedAt = rows[0].now;
+      verification.reapplicationGrantedBy = actor;
+      verification.reapplicationGrantReason = reason;
+      const saved = await verifications.save(verification);
+      saved.user = user;
+      return saved;
+    });
+  }
+
+  private async assertReapplicationAllowed(
+    repository: Repository<SellerVerification> | Repository<BreederApplication>,
+    userId: string,
+    breeder: boolean,
+  ) {
+    const blocked = await repository.exists({
+      where: {
+        userId,
+        reapplicationIntent: ReapplicationIntent.BLOCKED,
+        revokedAt: Not(IsNull()),
+        ...(!breeder ? { reapplicationGrantedAt: IsNull() } : {}),
+      },
+    });
+    if (blocked)
+      throw onboardingError(
+        HttpStatus.FORBIDDEN,
+        breeder
+          ? SellerErrorCode.BREEDER_ACCESS_REVOKED
+          : SellerErrorCode.ACCESS_REVOKED,
+        breeder
+          ? 'دسترسی درخواست پرورش‌دهندگی برای شما غیرفعال شده است.'
+          : 'دسترسی ثبت آگهی فروش پرنده برای شما غیرفعال شده است.',
+      );
   }
 
   private activeSellerConflict(): never {

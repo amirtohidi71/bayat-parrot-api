@@ -1,5 +1,10 @@
 import { BreederApplication } from './entities/breeder-application.entity';
 import { SellerVerification } from './entities/seller-verification.entity';
+import {
+  canReapply,
+  effectiveApprovalStatus,
+  effectiveReapplicationIntent,
+} from './seller-lifecycle';
 
 const userSummary = (value: SellerVerification | BreederApplication) => ({
   id: value.user.id,
@@ -16,6 +21,9 @@ export const sellerUserResponse = (value: SellerVerification) => ({
   consentAcceptedAt: value.consentAcceptedAt,
   consentVersion: value.consentVersion,
   status: value.status,
+  effectiveStatus: effectiveApprovalStatus(value),
+  canReapply: canReapply(value, value.user),
+  reapplicationIntent: effectiveReapplicationIntent(value),
   rejectionReason: value.rejectionReason,
   revokedAt: value.revokedAt,
   revocationReason: value.revocationReason,
@@ -30,6 +38,10 @@ export const sellerAdminResponse = (value: SellerVerification) => ({
   reviewedBy: value.reviewedBy,
   reviewedAt: value.reviewedAt,
   revokedBy: value.revokedBy,
+  originalReapplicationIntent: value.reapplicationIntent,
+  reapplicationGrantedAt: value.reapplicationGrantedAt,
+  reapplicationGrantedBy: value.reapplicationGrantedBy,
+  reapplicationGrantReason: value.reapplicationGrantReason,
 });
 
 export const breederUserResponse = (value: BreederApplication) => ({
@@ -44,6 +56,12 @@ export const breederUserResponse = (value: BreederApplication) => ({
   websiteUrl: value.websiteUrl,
   description: value.description,
   status: value.status,
+  effectiveStatus: effectiveApprovalStatus(value),
+  canReapply:
+    canReapply(value, value.user, true) && value.sellerAccessEligible === true,
+  reapplicationIntent: value.reapplicationIntent,
+  revokedAt: value.revokedAt,
+  revocationReason: value.revocationReason,
   rejectionReason: value.rejectionReason,
   contacted: Boolean(value.contactedAt),
   createdAt: value.createdAt,
@@ -58,4 +76,5 @@ export const breederAdminResponse = (value: BreederApplication) => ({
   privateCallNote: value.privateCallNote,
   reviewedBy: value.reviewedBy,
   reviewedAt: value.reviewedAt,
+  revokedBy: value.revokedBy,
 });
