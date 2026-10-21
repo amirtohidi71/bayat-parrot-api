@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { ValidationPipe } from '@nestjs/common';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DataSource, QueryFailedError, QueryRunner } from 'typeorm';
@@ -8,7 +9,10 @@ import { BirdSpecies } from './entities/bird-species.entity';
 import { BirdSubspecies } from './entities/bird-subspecies.entity';
 import { BreederSpeciesPermission } from './entities/breeder-species-permission.entity';
 import { BreederSubspeciesPermission } from './entities/breeder-subspecies-permission.entity';
-import { BreederPermissionEvent } from './entities/breeder-permission-event.entity';
+import {
+  BreederPermissionAction,
+  BreederPermissionEvent,
+} from './entities/breeder-permission-event.entity';
 import { SellerVerification } from '../seller-onboarding/entities/seller-verification.entity';
 import { BreederApplication } from '../seller-onboarding/entities/breeder-application.entity';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
@@ -17,6 +21,15 @@ import { ParrotSaleListingImage } from '../parrot-sale-listings/entities/parrot-
 import { ParrotSaleListingCreationLedger } from '../parrot-sale-listings/entities/parrot-sale-listing-creation-ledger.entity';
 import { ParrotSaleListingsService } from '../parrot-sale-listings/parrot-sale-listings.service';
 import { User } from '../users/entities/user.entity';
+import { SellerOnboardingService } from '../seller-onboarding/seller-onboarding.service';
+import { ReapplicationIntent } from '../seller-onboarding/seller-lifecycle';
+import { BreederTaxonService } from './breeder-taxon.service';
+import {
+  BreederPermissionDecision as Decision,
+  BreederPermissionKind as Kind,
+  RequestBreederTaxaDto,
+  DecideBreederPermissionDto,
+} from './breeder-taxon.dto';
 
 const DATABASE = 'parrot_listing_disposable_test';
 const enabled =
@@ -137,7 +150,7 @@ const PRIVILEGES =
         consumed boolean NOT NULL DEFAULT false, attempts integer NOT NULL DEFAULT 0,
         "createdAt" timestamptz NOT NULL DEFAULT now())`);
       await source.query(`CREATE TABLE public.products (id uuid PRIMARY KEY DEFAULT public.uuid_generate_v4(),
-      name varchar, status varchar, stock integer, images text[])`);
+      name varchar, status varchar, stock integer, images text[], "deletedAt" timestamptz)`);
       for (const name of [
         '20260926-create-seller-onboarding-v1.sql',
         '20261003-create-parrot-sale-listings-v1.sql',
@@ -1003,6 +1016,906 @@ const PRIVILEGES =
       await expect(service.create(user.id, input)).rejects.toMatchObject({
         status: 409,
         response: { code: 'PARROT_LISTING_WEEKLY_LIMIT_REACHED' },
+      });
+    });
+
+    describe('application-level taxon APIs against PostgreSQL', () => {
+      const policy = () =>
+        new SellerEligibilityPolicy(
+          source.getRepository(User),
+          source.getRepository(SellerVerification),
+        );
+      const api = () => new BreederTaxonService(source, policy());
+      const onboarding = (taxa = api()) =>
+        new SellerOnboardingService(
+          source,
+          source.getRepository(SellerVerification),
+          source.getRepository(BreederApplication),
+          policy(),
+          taxa,
+        );
+      const requestInput = (v: { species: string; subspecies: string }) => ({
+        requestId: randomUUID(),
+        selections: [{ speciesId: v.species, subspeciesIds: [v.subspecies] }],
+      });
+      const decision = (expectedRevision = 1) => ({
+        requestId: randomUUID(),
+        expectedRevision,
+        reason: 'Explicit fixture decision',
+      });
+      async function eligible() {
+        return source.transaction(async (manager) => {
+          const v = await fixture(manager.queryRunner!);
+          await manager.query("UPDATE users SET role='breeder' WHERE id=$1", [
+            v.user,
+          ]);
+          await manager.query(
+            `INSERT INTO seller_verifications("userId","firstName","lastName","birthDate","consentAcceptedAt","consentVersion",status,"reviewedBy","reviewedAt")
+            VALUES ($1,'Test','Seller','2000-01-01',now(),'v1','APPROVED','fixture-admin',now())`,
+            [v.user],
+          );
+          return v;
+        });
+      }
+      async function requested(v: Awaited<ReturnType<typeof eligible>>) {
+        const result = await api().request(
+          v.application,
+          v.user,
+          requestInput(v),
+        );
+        const parent = result.speciesPermissions[0],
+          child = parent.subspeciesPermissions[0];
+        return { parent, child };
+      }
+      async function approved(v: Awaited<ReturnType<typeof eligible>>) {
+        const p = await requested(v);
+        await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.APPROVE,
+          'fixture-admin',
+          decision(),
+        );
+        await api().decide(
+          v.application,
+          p.child.id,
+          Kind.SUBSPECIES,
+          Decision.APPROVE,
+          'fixture-admin',
+          decision(),
+        );
+        return p;
+      }
+      const eventCount = (id: string) =>
+        source
+          .getRepository(BreederPermissionEvent)
+          .count({ where: { applicationId: id } });
+
+      it('reads stable hierarchical taxonomy, never Product-derived authorization', async () => {
+        const v = await eligible(),
+          tree = await api().taxonomy();
+        expect(
+          tree.find((s) => s.id === v.species)?.subspecies.map((c) => c.id),
+        ).toContain(v.subspecies);
+        expect(
+          tree.some((s) => s.key === 'Historical unclassified label'),
+        ).toBe(false);
+        expect(Object.keys(tree[0]).sort()).toEqual([
+          'displayName',
+          'id',
+          'key',
+          'subspecies',
+        ]);
+      });
+      it('persists structured REQUESTED projections and append-only events without changing approved application history', async () => {
+        const v = await eligible(),
+          before = await source
+            .getRepository(BreederApplication)
+            .findOneByOrFail({ id: v.application });
+        const result = await api().request(
+          v.application,
+          v.user,
+          requestInput(v),
+        );
+        expect(result.speciesPermissions[0]).toMatchObject({
+          state: 'REQUESTED',
+          revision: 1,
+          effectiveApproved: false,
+        });
+        expect(
+          result.speciesPermissions[0].subspeciesPermissions[0].state,
+        ).toBe('REQUESTED');
+        expect(await eventCount(v.application)).toBe(2);
+        expect(
+          await source
+            .getRepository(BreederApplication)
+            .findOneByOrFail({ id: v.application }),
+        ).toEqual(before);
+        const audit = await source
+          .getRepository(BreederPermissionEvent)
+          .find({ where: { applicationId: v.application } });
+        expect(
+          audit.every(
+            (e) => e.actorType === 'CUSTOMER' && e.actorId === v.user,
+          ),
+        ).toBe(true);
+        expect(JSON.stringify(result)).not.toMatch(
+          /actorId|requestHash|privateCallNote|phone/,
+        );
+      });
+      it('rejects mismatched taxonomy and customer cross-application access before any writes', async () => {
+        const a = await eligible(),
+          b = await eligible();
+        await expect(
+          api().request(
+            a.application,
+            a.user,
+            requestInput({ species: a.species, subspecies: b.subspecies }),
+          ),
+        ).rejects.toMatchObject({
+          status: 400,
+          response: { code: 'BREEDER_TAXON_INVALID_SELECTION' },
+        });
+        await expect(
+          api().request(a.application, b.user, requestInput(a)),
+        ).rejects.toMatchObject({ status: 404 });
+        await expect(api().read(a.application, b.user)).rejects.toMatchObject({
+          status: 404,
+        });
+        expect(await eventCount(a.application)).toBe(0);
+      });
+      it('adds later children without rewriting parent approval or the application', async () => {
+        const v = await eligible(),
+          p = await approved(v);
+        const child = await source.getRepository(BirdSubspecies).save({
+          speciesId: v.species,
+          key: randomUUID(),
+          displayName: 'Additional fixture',
+        });
+        const result = await api().request(
+          v.application,
+          v.user,
+          requestInput({ species: v.species, subspecies: child.id }),
+        );
+        expect(result.speciesPermissions[0]).toMatchObject({
+          id: p.parent.id,
+          revision: 2,
+          state: 'APPROVED',
+        });
+        expect(
+          result.speciesPermissions[0].subspeciesPermissions.find(
+            (c) => c.subspeciesId === child.id,
+          )?.state,
+        ).toBe('REQUESTED');
+        expect(await eventCount(v.application)).toBe(5);
+      });
+      it('parent approval grants no child; child approval requires explicit approved parent', async () => {
+        const v = await eligible(),
+          p = await requested(v);
+        await expect(
+          api().decide(
+            v.application,
+            p.child.id,
+            Kind.SUBSPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          ),
+        ).rejects.toMatchObject({ status: 409 });
+        const result = await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.APPROVE,
+          'fixture-admin',
+          decision(),
+        );
+        expect(result.speciesPermissions[0]).toMatchObject({
+          state: 'APPROVED',
+          effectiveApproved: true,
+        });
+        expect(
+          result.speciesPermissions[0].subspeciesPermissions[0],
+        ).toMatchObject({ state: 'REQUESTED', effectiveApproved: false });
+      });
+      it('rejects stale revisions and cross-application permission IDs', async () => {
+        const v = await eligible(),
+          other = await eligible(),
+          p = await requested(v);
+        await expect(
+          api().decide(
+            other.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          ),
+        ).rejects.toMatchObject({ status: 404 });
+        await expect(
+          api().decide(
+            v.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(2),
+          ),
+        ).rejects.toMatchObject({
+          status: 409,
+          response: { code: 'BREEDER_TAXON_REVISION_CONFLICT' },
+        });
+        expect(await eventCount(v.application)).toBe(2);
+      });
+      it('serializes concurrent identical requests and rejects reusing a request ID for a changed payload', async () => {
+        const v = await eligible(),
+          input = requestInput(v);
+        await Promise.all([
+          api().request(v.application, v.user, input),
+          api().request(v.application, v.user, input),
+        ]);
+        expect(await eventCount(v.application)).toBe(2);
+        const another = await source.getRepository(BirdSubspecies).save({
+          speciesId: v.species,
+          key: randomUUID(),
+          displayName: 'Changed fixture',
+        });
+        await expect(
+          api().request(v.application, v.user, {
+            ...input,
+            selections: [{ speciesId: v.species, subspeciesIds: [another.id] }],
+          }),
+        ).rejects.toMatchObject({
+          status: 409,
+          response: { code: 'BREEDER_TAXON_IDEMPOTENCY_CONFLICT' },
+        });
+      });
+      it('approve versus reject at one revision permits exactly one mutation/audit', async () => {
+        const v = await eligible(),
+          p = await requested(v);
+        const results = await Promise.allSettled([
+          api().decide(
+            v.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          ),
+          api().decide(
+            v.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.REJECT,
+            'fixture-admin',
+            decision(),
+          ),
+        ]);
+        expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+        expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+        expect(await eventCount(v.application)).toBe(3);
+      });
+      it('replays admin requests without duplicating revisions; changed actor/reason conflicts', async () => {
+        const v = await eligible(),
+          p = await requested(v),
+          input = decision();
+        await Promise.all([
+          api().decide(
+            v.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            input,
+          ),
+          api().decide(
+            v.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            input,
+          ),
+        ]);
+        expect(await eventCount(v.application)).toBe(3);
+        for (const [actor, body] of [
+          ['other-admin', input],
+          ['fixture-admin', { ...input, reason: 'Changed' }],
+        ] as const)
+          await expect(
+            api().decide(
+              v.application,
+              p.parent.id,
+              Kind.SPECIES,
+              Decision.APPROVE,
+              actor,
+              body,
+            ),
+          ).rejects.toMatchObject({
+            status: 409,
+            response: { code: 'BREEDER_TAXON_IDEMPOTENCY_CONFLICT' },
+          });
+      });
+      it('revokes approved children atomically, and parent regrant never regrants children', async () => {
+        const v = await eligible(),
+          p = await approved(v),
+          input = decision(2);
+        const revoked = await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.REVOKE,
+          'fixture-admin',
+          input,
+        );
+        expect(revoked.speciesPermissions[0]).toMatchObject({
+          state: 'REVOKED',
+          revision: 3,
+        });
+        expect(
+          revoked.speciesPermissions[0].subspeciesPermissions[0],
+        ).toMatchObject({ state: 'REVOKED', revision: 3 });
+        await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.REVOKE,
+          'fixture-admin',
+          input,
+        );
+        expect(await eventCount(v.application)).toBe(6);
+        const regranted = await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.REGRANT,
+          'fixture-admin',
+          decision(3),
+        );
+        expect(
+          regranted.speciesPermissions[0].subspeciesPermissions[0].state,
+        ).toBe('REVOKED');
+        const final = await api().decide(
+          v.application,
+          p.child.id,
+          Kind.SUBSPECIES,
+          Decision.REGRANT,
+          'fixture-admin',
+          decision(3),
+        );
+        expect(
+          final.speciesPermissions[0].subspeciesPermissions[0],
+        ).toMatchObject({
+          state: 'APPROVED',
+          effectiveApproved: true,
+          revision: 4,
+        });
+      });
+      it('rejects individual taxa with history and allows only explicit admin regrant', async () => {
+        const v = await eligible(),
+          p = await requested(v);
+        await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.APPROVE,
+          'fixture-admin',
+          decision(),
+        );
+        await api().decide(
+          v.application,
+          p.child.id,
+          Kind.SUBSPECIES,
+          Decision.REJECT,
+          'fixture-admin',
+          decision(),
+        );
+        await expect(
+          api().request(v.application, v.user, requestInput(v)),
+        ).rejects.toMatchObject({ status: 409 });
+        const result = await api().decide(
+          v.application,
+          p.child.id,
+          Kind.SUBSPECIES,
+          Decision.REGRANT,
+          'fixture-admin',
+          decision(2),
+        );
+        expect(
+          result.speciesPermissions[0].subspeciesPermissions[0].state,
+        ).toBe('APPROVED');
+        expect(result.events?.map((e) => e.action)).toContain('REJECT');
+      });
+      it('parent revoke versus child approve cannot leave an approved child beneath a revoked parent', async () => {
+        const v = await eligible(),
+          p = await requested(v);
+        await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.APPROVE,
+          'fixture-admin',
+          decision(),
+        );
+        const result = await Promise.allSettled([
+          api().decide(
+            v.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.REVOKE,
+            'fixture-admin',
+            decision(2),
+          ),
+          api().decide(
+            v.application,
+            p.child.id,
+            Kind.SUBSPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          ),
+        ]);
+        expect(result[0].status).toBe('fulfilled');
+        const final = await api().read(v.application, v.user);
+        expect(final.speciesPermissions[0].state).toBe('REVOKED');
+        expect(
+          final.speciesPermissions[0].subspeciesPermissions[0].state,
+        ).not.toBe('APPROVED');
+      });
+      it('inactive accounts, revoked seller access and demoted DB roles cannot gain permissions', async () => {
+        for (const change of ['inactive', 'seller-revoked', 'demoted']) {
+          const v = await eligible(),
+            p = await requested(v);
+          if (change === 'inactive')
+            await source.query(
+              'UPDATE users SET "isActive"=false WHERE id=$1',
+              [v.user],
+            );
+          if (change === 'demoted')
+            await source.query("UPDATE users SET role='customer' WHERE id=$1", [
+              v.user,
+            ]);
+          if (change === 'seller-revoked') {
+            const verification = await source
+              .getRepository(SellerVerification)
+              .findOneByOrFail({ userId: v.user });
+            await onboarding().revokeSellerAccess(
+              verification.id,
+              'fixture-admin',
+              { reason: 'Fixture block' },
+            );
+          }
+          await expect(
+            api().request(v.application, v.user, requestInput(v)),
+          ).rejects.toMatchObject({ status: 403 });
+          await expect(
+            api().decide(
+              v.application,
+              p.parent.id,
+              Kind.SPECIES,
+              Decision.APPROVE,
+              'fixture-admin',
+              decision(),
+            ),
+          ).rejects.toMatchObject({ status: 403 });
+          expect((await api().read(v.application, v.user)).canRequestTaxa).toBe(
+            false,
+          );
+          expect(await eventCount(v.application)).toBe(2);
+        }
+      });
+      it('application revocation races serialize, retain history and immediately invalidate effective permissions', async () => {
+        const v = await eligible(),
+          p = await requested(v);
+        await Promise.allSettled([
+          onboarding().revokeBreeder(v.application, 'fixture-admin', {
+            reason: 'Reverify',
+            intent: ReapplicationIntent.REQUIRE_REVERIFICATION,
+          }),
+          api().decide(
+            v.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          ),
+        ]);
+        const final = await api().read(v.application, v.user);
+        expect(final.revoked).toBe(true);
+        expect(final.canRequestTaxa).toBe(false);
+        expect(final.speciesPermissions[0].effectiveApproved).toBe(false);
+        expect(
+          (await source.getRepository(User).findOneByOrFail({ id: v.user }))
+            .role,
+        ).toBe('customer');
+      });
+      it('initial structured submission and authorized reapplication are atomic; pending/contact rules remain intact', async () => {
+        const v = await eligible();
+        await onboarding().revokeBreeder(v.application, 'fixture-admin', {
+          reason: 'Reverify',
+          intent: ReapplicationIntent.REQUIRE_REVERIFICATION,
+        });
+        const result = await onboarding().submitBreeder(v.user, {
+          breederName: 'New application',
+          city: 'City',
+          experienceYears: 1,
+          approximateBirdCount: 1,
+          preferredContactTime: 'Morning',
+          taxonRequest: requestInput(v),
+        });
+        expect(result.status).toBe('PENDING_CALL');
+        expect(result.species).toEqual(['Fixture species']);
+        const permissions = await api().read(result.id, v.user);
+        expect(permissions.speciesPermissions[0].state).toBe('REQUESTED');
+        await expect(
+          api().decide(
+            result.id,
+            permissions.speciesPermissions[0].id,
+            Kind.SPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          ),
+        ).rejects.toMatchObject({ status: 403 });
+        await expect(
+          onboarding().approveBreeder(result.id, 'fixture-admin'),
+        ).rejects.toMatchObject({ status: 409 });
+        await expect(
+          api().request(v.application, v.user, requestInput(v)),
+        ).rejects.toMatchObject({
+          status: 409,
+          response: { code: 'BREEDER_TAXON_APPLICATION_NOT_CURRENT' },
+        });
+      });
+      it('a DB audit-write failure rolls back a permission transition and leaves retry possible', async () => {
+        const v = await eligible(),
+          p = await requested(v),
+          input = decision();
+        await source.query(
+          `CREATE FUNCTION public.foundation_fixture_fail_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Fixture failure' USING ERRCODE='23514'; END $$`,
+        );
+        await source.query(
+          `CREATE TRIGGER foundation_fixture_fail_audit BEFORE INSERT ON breeder_permission_events FOR EACH ROW EXECUTE FUNCTION public.foundation_fixture_fail_audit()`,
+        );
+        try {
+          await expect(
+            api().decide(
+              v.application,
+              p.parent.id,
+              Kind.SPECIES,
+              Decision.APPROVE,
+              'fixture-admin',
+              input,
+            ),
+          ).rejects.toMatchObject({ status: 409 });
+          expect(
+            (await api().read(v.application, v.user)).speciesPermissions[0],
+          ).toMatchObject({ state: 'REQUESTED', revision: 1 });
+          expect(await eventCount(v.application)).toBe(2);
+        } finally {
+          await source.query(
+            'DROP TRIGGER foundation_fixture_fail_audit ON breeder_permission_events',
+          );
+          await source.query(
+            'DROP FUNCTION public.foundation_fixture_fail_audit()',
+          );
+        }
+        await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.APPROVE,
+          'fixture-admin',
+          input,
+        );
+        expect(await eventCount(v.application)).toBe(3);
+      });
+      it('refuses revocation requiring Product unpublication; preserves Product, public images and commercial references', async () => {
+        const v = await eligible(),
+          p = await approved(v);
+        const listing = await source.transaction((manager) =>
+          breederListing(manager.queryRunner!, v, p.child.id),
+        );
+        const product = randomUUID();
+        await source.query(
+          `INSERT INTO products(id,name,status,stock,images,"isSellerListing") VALUES ($1,'Published fixture','published',3,ARRAY['/uploads/preserved.webp'],true)`,
+          [product],
+        );
+        await source.query(
+          'INSERT INTO foundation_order_items VALUES ($1,$2,1)',
+          [randomUUID(), product],
+        );
+        await source.query(
+          `UPDATE parrot_sale_listings SET status='APPROVED',"productId"=$1,"approvedPrice"=100,"reviewedBy"='fixture-admin',"reviewedAt"=now() WHERE id=$2`,
+          [product, listing],
+        );
+        await expect(
+          api().decide(
+            v.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.REVOKE,
+            'fixture-admin',
+            decision(2),
+          ),
+        ).rejects.toMatchObject({
+          status: 409,
+          response: { code: 'BREEDER_TAXON_UNPUBLISH_REQUIRED' },
+        });
+        const [stored] = await source.query<
+          Array<{ status: string; stock: number; images: string[] }>
+        >('SELECT status,stock,images FROM products WHERE id=$1', [product]);
+        expect(stored).toEqual({
+          status: 'published',
+          stock: 3,
+          images: ['/uploads/preserved.webp'],
+        });
+        expect(
+          await source.query(
+            'SELECT 1 FROM foundation_order_items WHERE "productId"=$1',
+            [product],
+          ),
+        ).toHaveLength(1);
+        expect(await eventCount(v.application)).toBe(4);
+      });
+      it('permission revocation does not affect ordinary Products, listing rows or weekly ledger history', async () => {
+        const v = await eligible(),
+          p = await approved(v),
+          product = randomUUID();
+        await source.query(
+          `INSERT INTO products(id,name,status,stock,images,"isSellerListing") VALUES ($1,'Ordinary fixture','published',2,ARRAY['/uploads/ordinary.webp'],true)`,
+          [product],
+        );
+        const listingId = randomUUID();
+        await source.transaction(async (manager) => {
+          await manager.query(
+            `INSERT INTO parrot_sale_listings(id,"sellerUserId",name,species,"requestedPrice","approvedPrice",status,"reviewedBy","reviewedAt","productId")
+            VALUES ($1,$2,'Ordinary fixture','Legacy label',100,100,'APPROVED','fixture-admin',now(),$3)`,
+            [listingId, v.user, product],
+          );
+          await manager.query(
+            `INSERT INTO parrot_sale_listing_creation_ledger("listingId","sellerUserId","createdAt") SELECT id,"sellerUserId","createdAt" FROM parrot_sale_listings WHERE id=$1`,
+            [listingId],
+          );
+        });
+        const ledger = await source
+          .getRepository(ParrotSaleListingCreationLedger)
+          .findOneByOrFail({ listingId });
+        await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.REVOKE,
+          'fixture-admin',
+          decision(2),
+        );
+        expect(
+          await source
+            .getRepository(ParrotSaleListingCreationLedger)
+            .findOneByOrFail({ listingId }),
+        ).toEqual(ledger);
+        const [stored] = await source.query<
+          Array<{ status: string; stock: number; images: string[] }>
+        >('SELECT status,stock,images FROM products WHERE id=$1', [product]);
+        expect(stored).toEqual({
+          status: 'published',
+          stock: 2,
+          images: ['/uploads/ordinary.webp'],
+        });
+        expect(
+          await source
+            .getRepository(ParrotSaleListing)
+            .countBy({ id: listingId }),
+        ).toBe(1);
+      });
+      it('initial application plus all projections/audit roll back on a database write failure, and retry succeeds', async () => {
+        const v = await eligible();
+        await onboarding().revokeBreeder(v.application, 'fixture-admin', {
+          reason: 'Reverify',
+          intent: ReapplicationIntent.REQUIRE_REVERIFICATION,
+        });
+        const input = {
+          breederName: 'New application',
+          city: 'City',
+          experienceYears: 1,
+          approximateBirdCount: 1,
+          preferredContactTime: 'Morning',
+          taxonRequest: requestInput(v),
+        };
+        await source.query(
+          `CREATE FUNCTION public.foundation_fixture_fail_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Fixture failure' USING ERRCODE='23514'; END $$`,
+        );
+        await source.query(
+          'CREATE TRIGGER foundation_fixture_fail_audit BEFORE INSERT ON breeder_permission_events FOR EACH ROW EXECUTE FUNCTION public.foundation_fixture_fail_audit()',
+        );
+        try {
+          await expect(
+            onboarding().submitBreeder(v.user, input),
+          ).rejects.toMatchObject({
+            status: 409,
+            response: { code: 'BREEDER_TAXON_INVALID_TRANSITION' },
+          });
+          expect(
+            await source
+              .getRepository(BreederApplication)
+              .countBy({ userId: v.user }),
+          ).toBe(1);
+          expect(
+            await source
+              .getRepository(BreederSpeciesPermission)
+              .countBy({ applicationId: v.application }),
+          ).toBe(0);
+          expect(await eventCount(v.application)).toBe(0);
+        } finally {
+          await source.query(
+            'DROP TRIGGER foundation_fixture_fail_audit ON breeder_permission_events',
+          );
+          await source.query(
+            'DROP FUNCTION public.foundation_fixture_fail_audit()',
+          );
+        }
+        const saved = await onboarding().submitBreeder(v.user, input);
+        expect(await eventCount(saved.id)).toBe(2);
+        expect(
+          (await api().read(saved.id, v.user)).speciesPermissions[0].state,
+        ).toBe('REQUESTED');
+      });
+      it('runs requests, hierarchical approvals and revocation with the non-owner runtime role', async () => {
+        const v = await eligible();
+        // Existing onboarding/Product privileges are fixture prerequisites;
+        // foundation privileges come exclusively from its committed migration.
+        await source.query(
+          'GRANT SELECT, UPDATE ON users, breeder_applications, seller_verifications TO bayat_app',
+        );
+        await source.query(
+          'GRANT SELECT ON parrot_sale_listings, products TO bayat_app',
+        );
+        const runtime = new DataSource({
+          type: 'postgres',
+          url: process.env.PARROT_LISTING_TEST_DATABASE_URL!,
+          entities: source.entityMetadatas.map((metadata) => metadata.target),
+          synchronize: false,
+          logging: false,
+          extra: { max: 2, options: '-c role=bayat_app' },
+        });
+        try {
+          await runtime.initialize();
+          await assertIdentity(runtime, DATABASE);
+          const [role] = await runtime.query<Array<{ current_user: string }>>(
+            'SELECT current_user',
+          );
+          expect(role.current_user).toBe('bayat_app');
+          const service = new BreederTaxonService(
+            runtime,
+            new SellerEligibilityPolicy(
+              runtime.getRepository(User),
+              runtime.getRepository(SellerVerification),
+            ),
+          );
+          const requested = await service.request(
+            v.application,
+            v.user,
+            requestInput(v),
+          );
+          const parent = requested.speciesPermissions[0],
+            child = parent.subspeciesPermissions[0];
+          await service.decide(
+            v.application,
+            parent.id,
+            Kind.SPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          );
+          await service.decide(
+            v.application,
+            child.id,
+            Kind.SUBSPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          );
+          const result = await service.decide(
+            v.application,
+            parent.id,
+            Kind.SPECIES,
+            Decision.REVOKE,
+            'fixture-admin',
+            decision(2),
+          );
+          expect(
+            result.speciesPermissions[0].subspeciesPermissions[0].state,
+          ).toBe('REVOKED');
+          expect(await eventCount(v.application)).toBe(6);
+        } finally {
+          if (runtime.isInitialized) await runtime.destroy();
+        }
+      });
+      it('production whitelisting cannot forge ownership, actor, revisions or grants in real permission/audit rows', async () => {
+        const v = await eligible();
+        const pipe = new ValidationPipe({
+          transform: true,
+          whitelist: true,
+          validationError: { target: false, value: false },
+        });
+        const clean = requestInput(v);
+        const input = (await pipe.transform(
+          {
+            ...clean,
+            actorId: 'forged',
+            userId: randomUUID(),
+            applicationId: randomUUID(),
+            state: 'APPROVED',
+            selections: clean.selections.map((s) => ({
+              ...s,
+              state: 'APPROVED',
+              revision: 500,
+              actorId: 'forged',
+            })),
+          },
+          { type: 'body', metatype: RequestBreederTaxaDto },
+        )) as RequestBreederTaxaDto;
+        expect(input).toEqual(clean);
+        const result = await api().request(v.application, v.user, input);
+        const parent = result.speciesPermissions[0];
+        expect(parent).toMatchObject({ state: 'REQUESTED', revision: 1 });
+        expect(parent.subspeciesPermissions[0]).toMatchObject({
+          state: 'REQUESTED',
+          revision: 1,
+        });
+        const before = await source
+          .getRepository(BreederPermissionEvent)
+          .find({ where: { applicationId: v.application } });
+        expect(before).toHaveLength(2);
+        expect(
+          before.every(
+            (e) => e.actorType === 'CUSTOMER' && e.actorId === v.user,
+          ),
+        ).toBe(true);
+        const cleanDecision = decision();
+        const adminInput = (await pipe.transform(
+          {
+            ...cleanDecision,
+            actorId: 'forged',
+            username: 'forged',
+            state: 'APPROVED',
+            revision: 500,
+            action: 'approve',
+            applicationId: randomUUID(),
+          },
+          { type: 'body', metatype: DecideBreederPermissionDto },
+        )) as DecideBreederPermissionDto;
+        expect(adminInput).toEqual(cleanDecision);
+        const rejected = await api().decide(
+          v.application,
+          parent.id,
+          Kind.SPECIES,
+          Decision.REJECT,
+          'review-fixture',
+          adminInput,
+        );
+        expect(rejected.speciesPermissions[0]).toMatchObject({
+          state: 'REJECTED',
+          revision: 2,
+        });
+        expect(
+          rejected.speciesPermissions[0].subspeciesPermissions[0].state,
+        ).toBe('REQUESTED');
+        const after = await source.getRepository(BreederPermissionEvent).find({
+          where: {
+            applicationId: v.application,
+            action: BreederPermissionAction.REJECT,
+          },
+        });
+        expect(after).toHaveLength(1);
+        expect(after[0]).toMatchObject({
+          actorType: 'ADMIN',
+          actorId: 'review-fixture',
+          action: 'REJECT',
+          revision: 2,
+        });
       });
     });
   },

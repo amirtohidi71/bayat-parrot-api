@@ -41,6 +41,11 @@ import {
 } from './seller-onboarding.constants';
 import { onboardingError } from './seller-onboarding.errors';
 import { lockSellerLifecycle, ReapplicationIntent } from './seller-lifecycle';
+import { BreederTaxonService } from '../breeder-listings/breeder-taxon.service';
+import {
+  BreederTaxonErrorCode,
+  taxonError,
+} from '../breeder-listings/breeder-taxon.errors';
 
 const sellerActive = [
   SellerVerificationStatus.PENDING,
@@ -61,6 +66,7 @@ export class SellerOnboardingService {
     @InjectRepository(BreederApplication)
     private readonly breeders: Repository<BreederApplication>,
     private readonly eligibility: SellerEligibilityPolicy,
+    private readonly taxonPermissions?: BreederTaxonService,
   ) {}
 
   async submitSeller(userId: string, input: SubmitSellerVerificationDto) {
@@ -265,11 +271,21 @@ export class SellerOnboardingService {
           })
         )
           this.activeBreederConflict();
-        return applications.save(
+        const selectedTaxa = input.taxonRequest
+          ? await this.taxonPermissions!.validateSelections(
+              manager,
+              input.taxonRequest,
+            )
+          : null;
+        const saved = await applications.save(
           applications.create({
             breederName: input.breederName,
             city: input.city,
-            species: input.species,
+            species: selectedTaxa
+              ? selectedTaxa.species
+                  .map((species) => species.displayName)
+                  .sort()
+              : input.species!,
             experienceYears: input.experienceYears,
             approximateBirdCount: input.approximateBirdCount,
             preferredContactTime: input.preferredContactTime,
@@ -291,9 +307,24 @@ export class SellerOnboardingService {
             reapplicationIntent: ReapplicationIntent.BLOCKED,
           }),
         );
+        if (input.taxonRequest)
+          await this.taxonPermissions!.requestInTransaction(
+            manager,
+            saved,
+            userId,
+            input.taxonRequest,
+          );
+        return saved;
       });
     } catch (error) {
       if (this.postgresCode(error) === '23505') this.activeBreederConflict();
+      if (
+        input.taxonRequest &&
+        ['23503', '23514', '40001', '40P01'].includes(
+          this.postgresCode(error) ?? '',
+        )
+      )
+        taxonError(409, BreederTaxonErrorCode.INVALID_TRANSITION);
       throw error;
     }
   }

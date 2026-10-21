@@ -8,14 +8,32 @@ import { SellerVerification } from './entities/seller-verification.entity';
 import { SellerEligibilityPolicy } from './seller-eligibility.policy';
 import { SellerOnboardingController } from './seller-onboarding.controller';
 import { SellerOnboardingService } from './seller-onboarding.service';
+import { BREEDER_SCHEMA_ENTITIES } from '../breeder-listings/breeder-schema.entities';
+import { BreederTaxonService } from '../breeder-listings/breeder-taxon.service';
+import { BreederTaxonController } from '../breeder-listings/breeder-taxon.controller';
+import { AdminBreederTaxonController } from '../breeder-listings/admin-breeder-taxon.controller';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, SellerVerification, BreederApplication]),
+    TypeOrmModule.forFeature([
+      User,
+      SellerVerification,
+      BreederApplication,
+      ...BREEDER_SCHEMA_ENTITIES,
+    ]),
     AdminModule,
   ],
-  controllers: [SellerOnboardingController, AdminSellerOnboardingController],
-  providers: [SellerOnboardingService, SellerEligibilityPolicy],
+  controllers: [
+    SellerOnboardingController,
+    AdminSellerOnboardingController,
+    BreederTaxonController,
+    AdminBreederTaxonController,
+  ],
+  providers: [
+    SellerOnboardingService,
+    SellerEligibilityPolicy,
+    BreederTaxonService,
+  ],
   exports: [SellerEligibilityPolicy],
 })
 export class SellerOnboardingModule {}

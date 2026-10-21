@@ -1,4 +1,4 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -6,6 +6,7 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
+  IsObject,
   IsOptional,
   IsString,
   IsUrl,
@@ -16,7 +17,9 @@ import {
   MinLength,
   ValidateBy,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
+import { RequestBreederTaxaDto } from '../../breeder-listings/breeder-taxon.dto';
 import {
   BreederApplicationStatus,
   BreederCallOutcome,
@@ -100,6 +103,12 @@ export class SubmitSellerVerificationDto {
 }
 
 export class SubmitBreederApplicationDto {
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsObject()
+  @ValidateNested()
+  @Type(() => RequestBreederTaxaDto)
+  taxonRequest?: RequestBreederTaxaDto;
+
   @Transform(trim)
   @IsString()
   @Length(1, 150)
@@ -110,6 +119,10 @@ export class SubmitBreederApplicationDto {
   @Length(1, 100)
   city: string;
 
+  @ValidateIf(
+    (input: SubmitBreederApplicationDto) =>
+      input.species !== undefined || input.taxonRequest === undefined,
+  )
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(20)
@@ -117,7 +130,7 @@ export class SubmitBreederApplicationDto {
   @MinLength(1, { each: true })
   @MaxLength(100, { each: true })
   @Transform(trimStringArray)
-  species: string[];
+  species?: string[];
 
   @Transform(strictInteger)
   @IsInt()
