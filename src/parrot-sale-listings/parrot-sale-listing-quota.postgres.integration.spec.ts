@@ -164,6 +164,18 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
       revocationReason: 'Legacy block',
       reapplicationIntent: ReapplicationIntent.BLOCKED,
     });
+    // Current entities include the additive foundation columns. Apply these
+    // only after the legacy migration/backfill checks above have completed.
+    for (const migration of [
+      '20261020-create-breeder-taxon-permissions-v1.sql',
+      '20261020-add-parrot-listing-submission-kind-v1.sql',
+    ]) {
+      const sql = await readFile(
+        resolve('scripts/migrations', migration),
+        'utf8',
+      );
+      await source.query(sql.replace(/^\\set[^\r\n]*(?:\r?\n)?/, ''));
+    }
   }, 60_000);
 
   afterAll(async () => {

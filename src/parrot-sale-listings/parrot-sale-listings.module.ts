@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { BREEDER_SCHEMA_ENTITIES } from '../breeder-listings/breeder-schema.entities';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AdminModule } from '../admin/admin.module';
 import { SellerOnboardingModule } from '../seller-onboarding/seller-onboarding.module';
@@ -22,6 +23,7 @@ import { ParrotSaleListingsService } from './parrot-sale-listings.service';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      ...BREEDER_SCHEMA_ENTITIES,
       ParrotSaleListing,
       ParrotSaleListingImage,
       ParrotSaleListingCreationLedger,

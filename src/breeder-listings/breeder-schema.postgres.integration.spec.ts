@@ -1,0 +1,1009 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { DataSource, QueryFailedError, QueryRunner } from 'typeorm';
+import { VET_TEST_ENTITIES } from '../../test/vet-test-entities';
+import { BREEDER_SCHEMA_ENTITIES } from './breeder-schema.entities';
+import { BirdSpecies } from './entities/bird-species.entity';
+import { BirdSubspecies } from './entities/bird-subspecies.entity';
+import { BreederSpeciesPermission } from './entities/breeder-species-permission.entity';
+import { BreederSubspeciesPermission } from './entities/breeder-subspecies-permission.entity';
+import { BreederPermissionEvent } from './entities/breeder-permission-event.entity';
+import { SellerVerification } from '../seller-onboarding/entities/seller-verification.entity';
+import { BreederApplication } from '../seller-onboarding/entities/breeder-application.entity';
+import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
+import { ParrotSaleListing } from '../parrot-sale-listings/entities/parrot-sale-listing.entity';
+import { ParrotSaleListingImage } from '../parrot-sale-listings/entities/parrot-sale-listing-image.entity';
+import { ParrotSaleListingCreationLedger } from '../parrot-sale-listings/entities/parrot-sale-listing-creation-ledger.entity';
+import { ParrotSaleListingsService } from '../parrot-sale-listings/parrot-sale-listings.service';
+import { User } from '../users/entities/user.entity';
+
+const DATABASE = 'parrot_listing_disposable_test';
+const enabled =
+  process.env.PARROT_LISTING_RUN_DB_TESTS === '1' &&
+  process.env.PARROT_LISTING_TEST_DATABASE_CONFIRM === 'DISPOSABLE' &&
+  Boolean(process.env.PARROT_LISTING_TEST_DATABASE_URL?.trim());
+const TAXON = '20261020-create-breeder-taxon-permissions-v1.sql';
+const KIND = '20261020-add-parrot-listing-submission-kind-v1.sql';
+const PRIVILEGES =
+  '20261020-grant-breeder-foundation-runtime-privileges-v1.sql';
+
+(enabled ? describe : describe.skip)(
+  'Breeder schema foundation on disposable PostgreSQL',
+  () => {
+    let admin: DataSource;
+    let source: DataSource;
+    let databaseCreated = false;
+    let roleCreated = false;
+    const legacyListing = randomUUID(),
+      legacyProduct = randomUUID(),
+      ledgerOnly = randomUUID(),
+      legacyUser = randomUUID();
+    const originalTime = '2026-01-03T01:02:03.000Z';
+
+    async function assertIdentity(connection: DataSource, database: string) {
+      const [row] = await connection.query<
+        Array<{ database: string; host: string }>
+      >(
+        'SELECT current_database() AS database, host(inet_server_addr()) AS host',
+      );
+      if (row.database !== database || !['127.0.0.1', '::1'].includes(row.host))
+        throw new Error('Disposable database identity mismatch');
+    }
+
+    async function migrate(name: string, runner?: QueryRunner) {
+      const connection = runner ?? source.createQueryRunner();
+      if (!runner) await connection.connect();
+      try {
+        const sql = await readFile(resolve('scripts/migrations', name), 'utf8');
+        await connection.query(sql.replace(/^\\set[^\r\n]*(?:\r?\n)?/, ''));
+      } catch (error) {
+        await connection.query('ROLLBACK');
+        throw error;
+      } finally {
+        if (!runner) await connection.release();
+      }
+    }
+
+    beforeAll(async () => {
+      const url = new URL(process.env.PARROT_LISTING_TEST_DATABASE_URL!);
+      if (
+        process.env.PARROT_LISTING_RUN_DB_TESTS !== '1' ||
+        process.env.PARROT_LISTING_TEST_DATABASE_CONFIRM !== 'DISPOSABLE' ||
+        !['postgres:', 'postgresql:'].includes(url.protocol) ||
+        !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+        url.pathname !== '/' + DATABASE ||
+        url.search ||
+        url.hash
+      )
+        throw new Error('Exact loopback disposable configuration required');
+      const adminUrl = new URL(url);
+      adminUrl.pathname = '/postgres';
+      admin = new DataSource({
+        type: 'postgres',
+        url: adminUrl.toString(),
+        synchronize: false,
+        logging: false,
+        extra: { max: 1 },
+      });
+      await admin.initialize();
+      await assertIdentity(admin, 'postgres');
+      const [existing] = await admin.query<
+        Array<{ database: boolean; role: boolean }>
+      >(
+        "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1) AS database, EXISTS(SELECT 1 FROM pg_roles WHERE rolname='bayat_app') AS role",
+        [DATABASE],
+      );
+      if (existing.database || existing.role)
+        throw new Error(
+          'Disposable database or isolated runtime role already exists; refusing reuse',
+        );
+      await admin.query('CREATE DATABASE "parrot_listing_disposable_test"');
+      databaseCreated = true;
+      source = new DataSource({
+        type: 'postgres',
+        url: url.toString(),
+        synchronize: false,
+        logging: false,
+        extra: { max: 8 },
+        entities: [
+          ...VET_TEST_ENTITIES,
+          SellerVerification,
+          BreederApplication,
+          ParrotSaleListing,
+          ParrotSaleListingImage,
+          ParrotSaleListingCreationLedger,
+          ...BREEDER_SCHEMA_ENTITIES,
+        ],
+      });
+      await source.initialize();
+      await assertIdentity(source, DATABASE);
+      await admin.query(
+        'CREATE ROLE bayat_app NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT',
+      );
+      roleCreated = true;
+      await source.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
+      await source.query(
+        "CREATE TYPE public.users_role_enum AS ENUM ('admin','customer')",
+      );
+      await source.query(`CREATE TABLE public.users (
+      id uuid PRIMARY KEY DEFAULT public.uuid_generate_v4(), phone varchar UNIQUE NOT NULL,
+      "firstName" varchar, "lastName" varchar, email varchar UNIQUE, "nationalId" varchar,
+      "profileCompleted" boolean NOT NULL DEFAULT false, "loyaltyPoints" integer NOT NULL DEFAULT 0,
+      role public.users_role_enum NOT NULL DEFAULT 'customer', "createdAt" timestamptz NOT NULL DEFAULT now(), "updatedAt" timestamptz NOT NULL DEFAULT now())`);
+      await source.query(`CREATE TABLE public.otps (
+        id uuid PRIMARY KEY DEFAULT public.uuid_generate_v4(), phone varchar NOT NULL,
+        "codeHash" varchar NOT NULL, "expiresAt" timestamptz NOT NULL,
+        consumed boolean NOT NULL DEFAULT false, attempts integer NOT NULL DEFAULT 0,
+        "createdAt" timestamptz NOT NULL DEFAULT now())`);
+      await source.query(`CREATE TABLE public.products (id uuid PRIMARY KEY DEFAULT public.uuid_generate_v4(),
+      name varchar, status varchar, stock integer, images text[])`);
+      for (const name of [
+        '20260926-create-seller-onboarding-v1.sql',
+        '20261003-create-parrot-sale-listings-v1.sql',
+        '20261009-add-parrot-sale-listing-lifecycle-v1.sql',
+        '20261017-create-parrot-sale-listing-creation-ledger-v1.sql',
+        '20261017-add-parrot-listing-cleanup-completed-v1.sql',
+        '20261019-add-seller-breeder-reverification-v1.sql',
+      ])
+        await migrate(name);
+      await source.query('INSERT INTO users(id,phone) VALUES ($1,$2)', [
+        legacyUser,
+        '09000000000',
+      ]);
+      await source.query(
+        `INSERT INTO products(id,name,status,stock,images,"isSellerListing") VALUES ($1,'Historical bird','published',3,ARRAY['/uploads/existing.webp'],true)`,
+        [legacyProduct],
+      );
+      await source.query(
+        `INSERT INTO parrot_sale_listings(id,"sellerUserId",name,species,"requestedPrice","approvedPrice",status,"reviewedBy","reviewedAt","productId","createdAt")
+      VALUES ($1,$2,'Historical bird','Historical unclassified label',100,100,'APPROVED','fixture-admin',now(),$3,$4)`,
+        [legacyListing, legacyUser, legacyProduct, originalTime],
+      );
+      await source.query(
+        `INSERT INTO parrot_sale_listing_creation_ledger("listingId","sellerUserId","createdAt")
+      SELECT id,"sellerUserId","createdAt" FROM parrot_sale_listings WHERE id=$1`,
+        [legacyListing],
+      );
+      await source.query(
+        `INSERT INTO parrot_sale_listing_creation_ledger("listingId","sellerUserId","createdAt","deletedAt","cleanupCompletedAt")
+      VALUES ($1,$2,$3,$3,$3)`,
+        [ledgerOnly, legacyUser, originalTime],
+      );
+      await source.query(
+        'CREATE TABLE foundation_order_items(id uuid PRIMARY KEY, "productId" uuid REFERENCES products(id) ON DELETE RESTRICT, quantity integer)',
+      );
+      await source.query(
+        'INSERT INTO foundation_order_items VALUES ($1,$2,1)',
+        [randomUUID(), legacyProduct],
+      );
+      await migrate(TAXON);
+      await migrate(KIND);
+      await migrate(PRIVILEGES);
+    }, 60_000);
+
+    afterAll(async () => {
+      try {
+        if (source?.isInitialized) await source.destroy();
+        if (admin?.isInitialized && databaseCreated) {
+          await assertIdentity(admin, 'postgres');
+          await admin.query('DROP DATABASE "parrot_listing_disposable_test"');
+          const [remaining] = await admin.query<Array<{ exists: boolean }>>(
+            'SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1) AS exists',
+            [DATABASE],
+          );
+          expect(remaining.exists).toBe(false);
+        }
+      } finally {
+        try {
+          if (admin?.isInitialized && roleCreated)
+            await admin.query('DROP ROLE bayat_app');
+        } finally {
+          if (admin?.isInitialized) await admin.destroy();
+        }
+      }
+    }, 60_000);
+
+    async function transaction(work: (runner: QueryRunner) => Promise<void>) {
+      const runner = source.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        await work(runner);
+      } finally {
+        await runner.rollbackTransaction();
+        await runner.release();
+      }
+    }
+
+    async function rejects(
+      runner: QueryRunner,
+      sql: string,
+      params: unknown[] = [],
+      code = '23514',
+    ) {
+      await runner.query('SAVEPOINT expected_failure');
+      let failure: unknown;
+      try {
+        await runner.query(sql, params);
+        await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+      } catch (error) {
+        failure = error;
+      } finally {
+        await runner.query('ROLLBACK TO SAVEPOINT expected_failure');
+        await runner.query('RELEASE SAVEPOINT expected_failure');
+      }
+      expect(failure).toBeInstanceOf(QueryFailedError);
+      expect(
+        (failure as QueryFailedError<{ code: string }>).driverError.code,
+      ).toBe(code);
+    }
+
+    async function fixture(runner: QueryRunner) {
+      const user = randomUUID(),
+        application = randomUUID(),
+        species = randomUUID(),
+        subspecies = randomUUID();
+      await runner.query(
+        `INSERT INTO users(id,phone,"firstName","lastName","phoneVerifiedAt") VALUES ($1,$2,'Test','Seller',now())`,
+        [user, '09' + String(Math.floor(Math.random() * 1e9)).padStart(9, '0')],
+      );
+      await runner.query(
+        `INSERT INTO breeder_applications(id,"userId","breederName",city,species,"experienceYears","approximateBirdCount","preferredContactTime",status,"reviewedAt","reviewedBy","callOutcome","contactedAt")
+      VALUES ($1,$2,'Test breeder','City','["Fixture"]',1,1,'Morning','APPROVED',now(),'fixture-admin','SUCCESSFUL',now())`,
+        [application, user],
+      );
+      await runner.query(
+        `INSERT INTO bird_species(id,key,"displayName") VALUES ($1,$2,'Fixture species')`,
+        [species, randomUUID()],
+      );
+      await runner.query(
+        `INSERT INTO bird_subspecies(id,"speciesId",key,"displayName") VALUES ($1,$2,$3,'Fixture subspecies')`,
+        [subspecies, species, randomUUID()],
+      );
+      return { user, application, species, subspecies };
+    }
+
+    async function event(
+      runner: QueryRunner,
+      application: string,
+      permission: string,
+      child: boolean,
+      revision = 1,
+      action = 'REQUEST',
+      from: string | null = null,
+      to = 'REQUESTED',
+    ) {
+      await runner.query(
+        `INSERT INTO breeder_permission_events("applicationId","speciesPermissionId","subspeciesPermissionId",revision,action,"fromState","toState","actorType","actorId",reason,"requestId","requestHash")
+      VALUES ($1,$2,$3,$4,$5,$6,$7,'ADMIN','fixture-admin','Fixture decision',$8,$9)`,
+        [
+          application,
+          child ? null : permission,
+          child ? permission : null,
+          revision,
+          action,
+          from,
+          to,
+          randomUUID(),
+          '0'.repeat(64),
+        ],
+      );
+    }
+
+    async function permissions(
+      runner: QueryRunner,
+      value: Awaited<ReturnType<typeof fixture>>,
+    ) {
+      const parent = randomUUID(),
+        child = randomUUID();
+      await runner.query(
+        `INSERT INTO breeder_species_permissions(id,"applicationId","speciesId") VALUES ($1,$2,$3)`,
+        [parent, value.application, value.species],
+      );
+      await event(runner, value.application, parent, false);
+      await runner.query(
+        `INSERT INTO breeder_subspecies_permissions(id,"applicationId","speciesId","subspeciesId","speciesPermissionId") VALUES ($1,$2,$3,$4,$5)`,
+        [child, value.application, value.species, value.subspecies, parent],
+      );
+      await event(runner, value.application, child, true);
+      return { parent, child };
+    }
+
+    async function approve(
+      runner: QueryRunner,
+      application: string,
+      id: string,
+      child: boolean,
+    ) {
+      const table = child
+        ? 'breeder_subspecies_permissions'
+        : 'breeder_species_permissions';
+      await runner.query(
+        `UPDATE ${table} SET state='APPROVED',revision=2 WHERE id=$1`,
+        [id],
+      );
+      await event(
+        runner,
+        application,
+        id,
+        child,
+        2,
+        'APPROVE',
+        'REQUESTED',
+        'APPROVED',
+      );
+    }
+
+    async function breederListing(
+      runner: QueryRunner,
+      v: Awaited<ReturnType<typeof fixture>>,
+      permission: string,
+    ) {
+      const id = randomUUID();
+      await runner.query(
+        `INSERT INTO parrot_sale_listings(id,"sellerUserId",name,species,"requestedPrice","submissionKind","speciesId","subspeciesId","breederApplicationId","breederSubspeciesPermissionId")
+      VALUES ($1,$2,'Fixture bird','Fixture species',100,'BREEDER',$3,$4,$5,$6)`,
+        [id, v.user, v.species, v.subspecies, v.application, permission],
+      );
+      await runner.query(
+        `INSERT INTO parrot_sale_listing_creation_ledger("listingId","sellerUserId","createdAt","submissionKind")
+      SELECT id,"sellerUserId","createdAt","submissionKind" FROM parrot_sale_listings WHERE id=$1`,
+        [id],
+      );
+      return id;
+    }
+
+    it('first run preserves legacy and ledger-only history as ORDINARY without taxonomy seeds or inferred grants', async () => {
+      const [listing] = await source.query<
+        Array<{
+          submissionKind: string;
+          productId: string;
+          species: string;
+          createdAt: Date;
+        }>
+      >('SELECT * FROM parrot_sale_listings WHERE id=$1', [legacyListing]);
+      expect(listing).toMatchObject({
+        submissionKind: 'ORDINARY',
+        productId: legacyProduct,
+        species: 'Historical unclassified label',
+      });
+      expect(listing.createdAt.toISOString()).toBe(originalTime);
+      const history = await source.query<
+        Array<{ submissionKind: string; createdAt: Date }>
+      >(
+        'SELECT * FROM parrot_sale_listing_creation_ledger WHERE "listingId" IN ($1,$2)',
+        [legacyListing, ledgerOnly],
+      );
+      expect(history).toHaveLength(2);
+      for (const row of history) {
+        expect(row.submissionKind).toBe('ORDINARY');
+        expect(row.createdAt.toISOString()).toBe(originalTime);
+      }
+      for (const table of [
+        'bird_species',
+        'bird_subspecies',
+        'breeder_species_permissions',
+        'breeder_subspecies_permissions',
+        'breeder_permission_events',
+      ]) {
+        const [row] = await source.query<Array<{ count: number }>>(
+          `SELECT count(*)::integer AS count FROM ${table}`,
+        );
+        expect(row.count).toBe(0);
+      }
+      const [product] = await source.query<
+        Array<{ status: string; stock: number; images: string[] }>
+      >('SELECT * FROM products WHERE id=$1', [legacyProduct]);
+      expect(product).toMatchObject({
+        status: 'published',
+        stock: 3,
+        images: ['/uploads/existing.webp'],
+      });
+      expect(
+        await source.query('SELECT * FROM foundation_order_items'),
+      ).toHaveLength(1);
+    });
+
+    it('reruns all three forward migrations idempotently', async () => {
+      for (const name of [TAXON, KIND, PRIVILEGES]) await migrate(name);
+      expect(
+        await source.query('SELECT * FROM parrot_sale_listing_creation_ledger'),
+      ).toHaveLength(2);
+    });
+
+    it('aligns entity columns and SQL types/nullability without synchronize', async () => {
+      const runner = source.createQueryRunner();
+      try {
+        for (const entity of [
+          BirdSpecies,
+          BirdSubspecies,
+          BreederSpeciesPermission,
+          BreederSubspeciesPermission,
+          BreederPermissionEvent,
+          ParrotSaleListing,
+          ParrotSaleListingCreationLedger,
+        ]) {
+          const metadata = source.getMetadata(entity);
+          expect(metadata.synchronize).toBe(false);
+          const table = await runner.getTable(metadata.tableName);
+          expect(table).toBeDefined();
+          for (const column of metadata.columns) {
+            const actual = table!.findColumnByName(column.databaseName);
+            expect(actual).toBeDefined();
+            expect(actual!.type).toBe(source.driver.normalizeType(column));
+            expect(actual!.isNullable).toBe(column.isNullable);
+            if (column.length) expect(actual!.length).toBe(column.length);
+          }
+        }
+      } finally {
+        await runner.release();
+      }
+    });
+
+    it('enforces stable unique keys and prevents key/parent rewriting', async () =>
+      transaction(async (runner) => {
+        const v = await fixture(runner);
+        await rejects(runner, 'UPDATE bird_species SET key=$1 WHERE id=$2', [
+          randomUUID(),
+          v.species,
+        ]);
+        await rejects(
+          runner,
+          'UPDATE bird_subspecies SET "speciesId"=$1 WHERE id=$2',
+          [randomUUID(), v.subspecies],
+        );
+        await rejects(
+          runner,
+          'INSERT INTO bird_subspecies("speciesId",key,"displayName") SELECT "speciesId",key,"displayName" FROM bird_subspecies WHERE id=$1',
+          [v.subspecies],
+          '23505',
+        );
+        await rejects(
+          runner,
+          'INSERT INTO bird_subspecies("speciesId",key,"displayName") VALUES ($1,$2,$3)',
+          [randomUUID(), 'fixture', 'Fixture'],
+          '23503',
+        );
+      }));
+
+    it('parent approval never approves children; child approval requires the exact approved parent', async () =>
+      transaction(async (runner) => {
+        const v = await fixture(runner),
+          p = await permissions(runner, v);
+        await rejects(
+          runner,
+          "UPDATE breeder_subspecies_permissions SET state='APPROVED',revision=2 WHERE id=$1",
+          [p.child],
+        );
+        await approve(runner, v.application, p.parent, false);
+        const [child] = (await runner.query(
+          'SELECT state FROM breeder_subspecies_permissions WHERE id=$1',
+          [p.child],
+        )) as Array<{ state: string }>;
+        expect(child.state).toBe('REQUESTED');
+        await approve(runner, v.application, p.child, true);
+        await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+      }));
+
+    it('rejects cross-species/cross-application child permissions and owner-spoofed BREEDER listings', async () =>
+      transaction(async (runner) => {
+        const v = await fixture(runner),
+          other = await fixture(runner),
+          p = await permissions(runner, v);
+        await rejects(
+          runner,
+          `INSERT INTO breeder_subspecies_permissions("applicationId","speciesId","subspeciesId","speciesPermissionId") VALUES ($1,$2,$3,$4)`,
+          [other.application, v.species, v.subspecies, p.parent],
+          '23503',
+        );
+        await rejects(
+          runner,
+          `INSERT INTO breeder_subspecies_permissions("applicationId","speciesId","subspeciesId","speciesPermissionId") VALUES ($1,$2,$3,$4)`,
+          [v.application, v.species, other.subspecies, p.parent],
+          '23503',
+        );
+        const id = await breederListing(runner, v, p.child);
+        await rejects(
+          runner,
+          'UPDATE parrot_sale_listings SET "breederApplicationId"=$1 WHERE id=$2',
+          [other.application, id],
+          '23503',
+        );
+      }));
+
+    it('requires matching append-only audit for every revision and rejects actor/reason/chain corruption', async () =>
+      transaction(async (runner) => {
+        const v = await fixture(runner),
+          p = await permissions(runner, v);
+        await rejects(
+          runner,
+          "UPDATE breeder_species_permissions SET state='APPROVED',revision=2 WHERE id=$1",
+          [p.parent],
+        );
+        await rejects(
+          runner,
+          'UPDATE breeder_permission_events SET reason=$1 WHERE "speciesPermissionId"=$2',
+          ['Rewrite', p.parent],
+        );
+        await rejects(
+          runner,
+          'DELETE FROM breeder_permission_events WHERE "speciesPermissionId"=$1',
+          [p.parent],
+        );
+        await rejects(
+          runner,
+          `INSERT INTO breeder_permission_events("applicationId","speciesPermissionId",revision,action,"fromState","toState","actorType","actorId","requestId","requestHash")
+      VALUES ($1,$2,2,'APPROVE','REQUESTED','APPROVED','CUSTOMER','fixture',$3,$4)`,
+          [v.application, p.parent, randomUUID(), '0'.repeat(64)],
+        );
+        await rejects(
+          runner,
+          `INSERT INTO breeder_permission_events("applicationId","speciesPermissionId",revision,action,"fromState","toState","actorType","actorId",reason,"requestId","requestHash")
+      VALUES ($1,$2,9,'REVOKE','APPROVED','REVOKED','ADMIN','fixture','Reason',$3,$4)`,
+          [v.application, p.parent, randomUUID(), '0'.repeat(64)],
+        );
+        await approve(runner, v.application, p.parent, false);
+        await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+        await rejects(
+          runner,
+          "UPDATE breeder_species_permissions SET state='REVOKED',revision=9 WHERE id=$1",
+          [p.parent],
+        );
+      }));
+
+    it('cannot revoke a parent while retaining approved children; atomic child revocation retains history', async () =>
+      transaction(async (runner) => {
+        const v = await fixture(runner),
+          p = await permissions(runner, v);
+        await approve(runner, v.application, p.parent, false);
+        await approve(runner, v.application, p.child, true);
+        await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+        await runner.query('SET CONSTRAINTS ALL DEFERRED');
+        await runner.query('SAVEPOINT parent_only');
+        await runner.query(
+          "UPDATE breeder_species_permissions SET state='REVOKED',revision=3 WHERE id=$1",
+          [p.parent],
+        );
+        await event(
+          runner,
+          v.application,
+          p.parent,
+          false,
+          3,
+          'REVOKE',
+          'APPROVED',
+          'REVOKED',
+        );
+        await expect(
+          runner.query('SET CONSTRAINTS ALL IMMEDIATE'),
+        ).rejects.toBeDefined();
+        await runner.query('ROLLBACK TO SAVEPOINT parent_only');
+        await runner.query(
+          "UPDATE breeder_species_permissions SET state='REVOKED',revision=3 WHERE id=$1",
+          [p.parent],
+        );
+        await event(
+          runner,
+          v.application,
+          p.parent,
+          false,
+          3,
+          'REVOKE',
+          'APPROVED',
+          'REVOKED',
+        );
+        await runner.query(
+          "UPDATE breeder_subspecies_permissions SET state='REVOKED',revision=3 WHERE id=$1",
+          [p.child],
+        );
+        await event(
+          runner,
+          v.application,
+          p.child,
+          true,
+          3,
+          'REVOKE',
+          'APPROVED',
+          'REVOKED',
+        );
+        await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+        expect(
+          await runner.query(
+            'SELECT * FROM breeder_permission_events WHERE "applicationId"=$1',
+            [v.application],
+          ),
+        ).toHaveLength(6);
+      }));
+
+    it('rejects missing BREEDER linkage, ordinary privilege linkage, mutable kind and ledger mismatches', async () =>
+      transaction(async (runner) => {
+        const v = await fixture(runner),
+          p = await permissions(runner, v);
+        await rejects(
+          runner,
+          `INSERT INTO parrot_sale_listings("sellerUserId",name,species,"requestedPrice","submissionKind") VALUES ($1,'Bird','Fixture',100,'BREEDER')`,
+          [v.user],
+        );
+        const id = await breederListing(runner, v, p.child);
+        await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+        await rejects(
+          runner,
+          'UPDATE parrot_sale_listings SET "submissionKind"=\'ORDINARY\' WHERE id=$1',
+          [id],
+        );
+        await rejects(
+          runner,
+          'UPDATE parrot_sale_listing_creation_ledger SET "submissionKind"=\'ORDINARY\' WHERE "listingId"=$1',
+          [id],
+        );
+        await rejects(
+          runner,
+          `INSERT INTO parrot_sale_listings("sellerUserId",name,species,"requestedPrice","breederApplicationId") VALUES ($1,'Bird','Fixture',100,$2)`,
+          [v.user, v.application],
+        );
+        await rejects(
+          runner,
+          'UPDATE parrot_sale_listing_creation_ledger SET "sellerUserId"=$1 WHERE "listingId"=$2',
+          [randomUUID(), id],
+        );
+      }));
+
+    it('keeps FK-free permanent creation history after an operational BREEDER listing is removed', async () =>
+      transaction(async (runner) => {
+        const v = await fixture(runner),
+          p = await permissions(runner, v),
+          id = await breederListing(runner, v, p.child);
+        await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+        await runner.query('DELETE FROM parrot_sale_listings WHERE id=$1', [
+          id,
+        ]);
+        const [row] = (await runner.query(
+          'SELECT "submissionKind" FROM parrot_sale_listing_creation_ledger WHERE "listingId"=$1',
+          [id],
+        )) as Array<{ submissionKind: string }>;
+        expect(row.submissionKind).toBe('BREEDER');
+        expect(
+          await runner.query(
+            "SELECT 1 FROM pg_constraint WHERE conrelid='public.parrot_sale_listing_creation_ledger'::regclass AND contype='f'",
+          ),
+        ).toHaveLength(0);
+      }));
+
+    it.each(['child-first', 'parent-first'])(
+      'serializes parent revocation versus child approval (%s)',
+      async (order) => {
+        const first = source.createQueryRunner();
+        const second = source.createQueryRunner();
+        await first.connect();
+        await second.connect();
+        try {
+          await first.startTransaction();
+          const v = await fixture(first);
+          const p = await permissions(first, v);
+          await approve(first, v.application, p.parent, false);
+          await first.commitTransaction();
+          await first.startTransaction();
+          await second.startTransaction();
+          await second.query("SET LOCAL lock_timeout='5s'");
+          const [{ pid }] = await second.query<Array<{ pid: number }>>(
+            'SELECT pg_backend_pid() AS pid',
+          );
+          const revoke = async (runner: QueryRunner) => {
+            await runner.query(
+              "UPDATE breeder_species_permissions SET state='REVOKED',revision=3 WHERE id=$1",
+              [p.parent],
+            );
+            await event(
+              runner,
+              v.application,
+              p.parent,
+              false,
+              3,
+              'REVOKE',
+              'APPROVED',
+              'REVOKED',
+            );
+          };
+          if (order === 'child-first')
+            await approve(first, v.application, p.child, true);
+          else await revoke(first);
+          // Capture failure immediately; the second transaction must genuinely
+          // block on the parent lock, not merely run after the first finishes.
+          const competing = (async () => {
+            try {
+              if (order === 'child-first') await revoke(second);
+              else await approve(second, v.application, p.child, true);
+              await second.commitTransaction();
+              return null;
+            } catch (error) {
+              return error as QueryFailedError<{ code: string }>;
+            }
+          })();
+          let blocked = false;
+          const deadline = Date.now() + 3000;
+          while (!blocked && Date.now() < deadline) {
+            const [row] = await source.query<Array<{ blocked: boolean }>>(
+              'SELECT cardinality(pg_blocking_pids($1))>0 AS blocked',
+              [pid],
+            );
+            blocked = row.blocked;
+            if (!blocked)
+              await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          expect(blocked).toBe(true);
+          await first.commitTransaction();
+          const error = await competing;
+          expect(error?.driverError.code).toBe('23514');
+          await second.rollbackTransaction();
+          const [states] = await source.query<
+            Array<{ parent: string; child: string }>
+          >(
+            `SELECT p.state AS parent,c.state AS child FROM breeder_species_permissions p
+             JOIN breeder_subspecies_permissions c ON c."speciesPermissionId"=p.id WHERE p.id=$1`,
+            [p.parent],
+          );
+          expect(states).toEqual(
+            order === 'child-first'
+              ? { parent: 'APPROVED', child: 'APPROVED' }
+              : { parent: 'REVOKED', child: 'REQUESTED' },
+          );
+        } finally {
+          if (first.isTransactionActive) await first.rollbackTransaction();
+          if (second.isTransactionActive) await second.rollbackTransaction();
+          await first.release();
+          await second.release();
+        }
+      },
+    );
+
+    it.each([
+      'column',
+      'CHECK',
+      'index',
+      'trigger',
+      'trigger columns',
+      'unexpected trigger',
+      'function',
+    ])('fails closed on incompatible same-name taxonomy %s', async (kind) => {
+      const runner = source.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        if (kind === 'column')
+          await runner.query(
+            'ALTER TABLE bird_species ALTER COLUMN "displayName" TYPE varchar(99)',
+          );
+        if (kind === 'CHECK') {
+          await runner.query(
+            'ALTER TABLE bird_species DROP CONSTRAINT "CHK_bird_species_text"',
+          );
+          await runner.query(
+            'ALTER TABLE bird_species ADD CONSTRAINT "CHK_bird_species_text" CHECK(true)',
+          );
+        }
+        if (kind === 'index') {
+          await runner.query(
+            'DROP INDEX "IDX_breeder_species_application_state"',
+          );
+          await runner.query(
+            'CREATE INDEX "IDX_breeder_species_application_state" ON breeder_species_permissions("applicationId" NULLS FIRST,state)',
+          );
+        }
+        if (kind === 'trigger')
+          await runner.query(
+            'ALTER TABLE bird_species DISABLE TRIGGER "TRG_breeder_identity"',
+          );
+        if (kind === 'trigger columns') {
+          await runner.query(
+            'DROP TRIGGER "TRG_breeder_identity" ON bird_species',
+          );
+          await runner.query(`CREATE TRIGGER "TRG_breeder_identity" BEFORE INSERT OR UPDATE OF "displayName" OR DELETE
+              ON bird_species FOR EACH ROW EXECUTE FUNCTION public.guard_breeder_identity_v1()`);
+        }
+        if (kind === 'unexpected trigger')
+          await runner.query(`CREATE TRIGGER "TRG_breeder_event_chain" BEFORE INSERT OR UPDATE OR DELETE
+              ON bird_species FOR EACH ROW EXECUTE FUNCTION public.guard_breeder_identity_v1()`);
+        if (kind === 'function')
+          await runner.query(
+            'CREATE OR REPLACE FUNCTION public.guard_breeder_identity_v1() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$',
+          );
+        await expect(migrate(TAXON, runner)).rejects.toThrow(
+          /Incompatible|Unexpected/,
+        );
+      } finally {
+        await runner.query('ROLLBACK');
+        await runner.release();
+      }
+      await migrate(TAXON);
+    });
+
+    it.each(['column', 'CHECK', 'index'])(
+      'fails closed on incompatible same-name listing-kind %s',
+      async (kind) => {
+        const runner = source.createQueryRunner();
+        await runner.connect();
+        await runner.startTransaction();
+        try {
+          if (kind === 'column')
+            await runner.query(
+              'ALTER TABLE parrot_sale_listings ALTER COLUMN "submissionKind" DROP NOT NULL',
+            );
+          if (kind === 'CHECK') {
+            await runner.query(
+              'ALTER TABLE parrot_sale_listings DROP CONSTRAINT "CHK_parrot_listing_kind"',
+            );
+            await runner.query(
+              'ALTER TABLE parrot_sale_listings ADD CONSTRAINT "CHK_parrot_listing_kind" CHECK(true)',
+            );
+          }
+          if (kind === 'index') {
+            await runner.query(
+              'DROP INDEX "IDX_parrot_listing_creation_kind_week"',
+            );
+            await runner.query(
+              'CREATE INDEX "IDX_parrot_listing_creation_kind_week" ON parrot_sale_listing_creation_ledger("sellerUserId","submissionKind","createdAt" DESC NULLS LAST)',
+            );
+          }
+          await expect(migrate(KIND, runner)).rejects.toThrow(/Incompatible/);
+        } finally {
+          await runner.query('ROLLBACK');
+          await runner.release();
+        }
+        await migrate(KIND);
+      },
+    );
+
+    it('runtime privileges are non-destructive and audit is insert-only, without table ownership', async () => {
+      for (const table of [
+        'bird_species',
+        'bird_subspecies',
+        'breeder_species_permissions',
+        'breeder_subspecies_permissions',
+        'breeder_permission_events',
+      ]) {
+        for (const privilege of [
+          'SELECT',
+          'INSERT',
+          'UPDATE',
+          'DELETE',
+          'TRUNCATE',
+          'REFERENCES',
+          'TRIGGER',
+        ]) {
+          const [row] = await source.query<Array<{ allowed: boolean }>>(
+            "SELECT has_table_privilege('bayat_app',$1,$2) AS allowed",
+            ['public.' + table, privilege],
+          );
+          expect(row.allowed).toBe(
+            [
+              'SELECT',
+              'INSERT',
+              ...(table === 'breeder_permission_events' ? [] : ['UPDATE']),
+            ].includes(privilege),
+          );
+        }
+        const [owner] = await source.query<Array<{ owned: boolean }>>(
+          "SELECT pg_has_role('bayat_app',relowner,'MEMBER') AS owned FROM pg_class WHERE oid=to_regclass($1)",
+          ['public.' + table],
+        );
+        expect(owner.owned).toBe(false);
+      }
+    });
+
+    it.each(['OWNER', 'TRUNCATE', 'UPDATE'])(
+      'rejects non-inherited runtime membership carrying audit-table %s authority',
+      async (authority) => {
+        const runner = source.createQueryRunner();
+        await runner.connect();
+        await runner.startTransaction();
+        let failure: unknown;
+        try {
+          // This role and ownership change exist only inside this rolled-back
+          // transaction in the disposable database; never reuse an existing role.
+          await runner.query(
+            'CREATE ROLE breeder_foundation_test_owner NOLOGIN',
+          );
+          await runner.query(
+            'GRANT breeder_foundation_test_owner TO bayat_app',
+          );
+          if (authority === 'OWNER') {
+            await runner.query(
+              'ALTER TABLE public.breeder_permission_events OWNER TO breeder_foundation_test_owner',
+            );
+          } else {
+            // authority comes only from the fixed test cases above.
+            await runner.query(
+              `GRANT ${authority} ON public.breeder_permission_events TO breeder_foundation_test_owner`,
+            );
+          }
+          const [membership] = (await runner.query(`SELECT
+          pg_has_role('bayat_app','breeder_foundation_test_owner','MEMBER') AS member,
+          pg_has_role('bayat_app','breeder_foundation_test_owner','USAGE') AS inherited,
+          has_table_privilege('bayat_app','public.breeder_permission_events','DELETE') AS destructive`)) as Array<{
+            member: boolean;
+            inherited: boolean;
+            destructive: boolean;
+          }>;
+          expect(membership).toEqual({
+            member: true,
+            inherited: false,
+            destructive: false,
+          });
+          const sql = await readFile(
+            resolve('scripts/migrations', PRIVILEGES),
+            'utf8',
+          );
+          // Keep the migration inside this test transaction even if the unsafe
+          // preflight unexpectedly accepts it; ownership must always roll back.
+          try {
+            await runner.query(
+              sql
+                .replace(/^\\set[^\r\n]*(?:\r?\n)?/, '')
+                .replace(/^(?:BEGIN|COMMIT);\r?$/gm, ''),
+            );
+          } catch (error) {
+            failure = error;
+          }
+        } finally {
+          await runner.rollbackTransaction();
+          await runner.release();
+        }
+        expect(failure).toBeInstanceOf(QueryFailedError);
+        expect((failure as Error).message).toMatch(
+          /Unexpected destructive breeder runtime privileges/,
+        );
+      },
+    );
+
+    it('existing ordinary create remains atomic and quota behavior is unchanged', async () => {
+      const user = await source.getRepository(User).save({
+        phone: '09111111111',
+        firstName: 'Test',
+        lastName: 'Seller',
+        phoneVerifiedAt: new Date(),
+        isActive: true,
+      });
+      await source.getRepository(SellerVerification).save({
+        userId: user.id,
+        firstName: 'Test',
+        lastName: 'Seller',
+        birthDate: '2000-01-01',
+        consentAcceptedAt: new Date(),
+        consentVersion: 'v1',
+        status: 'APPROVED' as never,
+        reviewedAt: new Date(),
+        reviewedBy: 'fixture-admin',
+      });
+      const service = new ParrotSaleListingsService(
+        source,
+        source.getRepository(ParrotSaleListing),
+        new SellerEligibilityPolicy(
+          source.getRepository(User),
+          source.getRepository(SellerVerification),
+        ),
+        {} as never,
+        { assertValidSelection: () => Promise.resolve() } as never,
+      );
+      const input = {
+        name: 'Fixture bird',
+        species: 'Fixture',
+        requestedPrice: 100,
+      };
+      const listing = await service.create(user.id, input);
+      await service.create(user.id, input);
+      expect(listing.submissionKind).toBe('ORDINARY');
+      expect(
+        (
+          await source
+            .getRepository(ParrotSaleListingCreationLedger)
+            .findOneByOrFail({ listingId: listing.id })
+        ).submissionKind,
+      ).toBe('ORDINARY');
+      await expect(service.create(user.id, input)).rejects.toMatchObject({
+        status: 409,
+        response: { code: 'PARROT_LISTING_WEEKLY_LIMIT_REACHED' },
+      });
+    });
+  },
+);

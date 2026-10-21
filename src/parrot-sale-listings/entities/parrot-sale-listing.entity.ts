@@ -16,6 +16,7 @@ import {
   ProductGender,
 } from '../../products/entities/product.entity';
 import { User } from '../../users/entities/user.entity';
+import { ListingSubmissionKind } from './listing-submission-kind';
 import { ParrotSaleListingImage } from './parrot-sale-listing-image.entity';
 
 export enum ParrotSaleListingStatus {
@@ -30,7 +31,35 @@ export enum ParrotSaleListingStatus {
 @Index('IDX_parrot_sale_listings_seller_created', ['sellerUserId', 'createdAt'])
 @Index('IDX_parrot_sale_listings_status_created', ['status', 'createdAt'])
 @Index('UQ_parrot_sale_listings_product', ['productId'], { unique: true })
+@Index('IDX_parrot_listing_breeder_permission', [
+  'breederSubspeciesPermissionId',
+  'id',
+])
+@Index('IDX_parrot_listing_breeder_application', [
+  'breederApplicationId',
+  'submissionKind',
+  'id',
+])
 export class ParrotSaleListing {
+  @Column({
+    type: 'varchar',
+    length: 16,
+    default: ListingSubmissionKind.ORDINARY,
+  })
+  submissionKind: ListingSubmissionKind;
+
+  @Column({ type: 'uuid', nullable: true })
+  speciesId: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  subspeciesId: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  breederApplicationId: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  breederSubspeciesPermissionId: string | null;
+
   @PrimaryGeneratedColumn('uuid')
   id: string;
 

@@ -27,6 +27,7 @@ export enum BreederCallOutcome {
 
 @Entity({ name: 'breeder_applications', synchronize: false })
 @Index('IDX_breeder_applications_user_created', ['userId', 'createdAt'])
+@Index('UQ_breeder_application_id_user', ['id', 'userId'], { unique: true })
 export class BreederApplication {
   // Response-only indication for historical admin detail/list records.
   isCurrent?: boolean;
