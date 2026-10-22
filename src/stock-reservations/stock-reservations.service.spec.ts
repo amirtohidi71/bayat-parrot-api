@@ -198,6 +198,35 @@ describe('StockReservationsService', () => {
     expect(products.update).toHaveBeenCalledWith('product', { stock: 1 });
   });
 
+  it('cannot consume a reservation after Product unpublication and leaves stock/state unchanged', async () => {
+    const reservation = {
+      id: 'reservation',
+      productId: 'product',
+      status: ProductStockReservationStatus.ACTIVE,
+      quantity: 1,
+      expiresAt: new Date('2026-10-04T00:20:00Z'),
+      orderId: 'order',
+    };
+    reservations.findOne.mockResolvedValue(reservation);
+    manager.query.mockResolvedValue([
+      { now: new Date('2026-10-04T00:00:00Z') },
+    ]);
+    productQuery.getOne.mockResolvedValue({
+      id: 'product',
+      stock: 3,
+      status: ProductStatus.DRAFT,
+    });
+    await expect(service.consume('reservation', 'order')).rejects.toMatchObject(
+      {
+        status: 409,
+        response: { code: 'STOCK_RESERVATION_PRODUCT_NOT_PUBLISHED' },
+      },
+    );
+    expect(products.update).not.toHaveBeenCalled();
+    expect(reservations.save).not.toHaveBeenCalled();
+    expect(reservation.status).toBe(ProductStockReservationStatus.ACTIVE);
+  });
+
   it('uses a bounded SKIP LOCKED expiry batch', async () => {
     manager.query.mockResolvedValue([]);
     await expect(service.expireBatch(25)).resolves.toEqual([]);

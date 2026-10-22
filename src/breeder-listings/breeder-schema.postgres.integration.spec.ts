@@ -1,3 +1,10 @@
+import { SellerListingProductPublisherService } from '../products/seller-listing-product-publisher.service';
+import { ProductsService } from '../products/products.service';
+import { StockReservationsService } from '../stock-reservations/stock-reservations.service';
+import { ProductStockReservation } from '../stock-reservations/entities/product-stock-reservation.entity';
+import { Order } from '../orders/entities/order.entity';
+import { OrderItem } from '../orders/entities/order-item.entity';
+import { OrdersService } from '../orders/orders.service';
 import { ParrotSaleListingApprovalService } from '../parrot-sale-listings/parrot-sale-listing-approval.service';
 import { Product } from '../products/entities/product.entity';
 import { ListingSubmissionKind } from '../parrot-sale-listings/entities/listing-submission-kind';
@@ -9,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import {
   DataSource,
   EntityManager,
+  In,
   QueryFailedError,
   QueryRunner,
 } from 'typeorm';
@@ -16,7 +24,10 @@ import { VET_TEST_ENTITIES } from '../../test/vet-test-entities';
 import { BREEDER_SCHEMA_ENTITIES } from './breeder-schema.entities';
 import { BirdSpecies } from './entities/bird-species.entity';
 import { BirdSubspecies } from './entities/bird-subspecies.entity';
-import { BreederSpeciesPermission } from './entities/breeder-species-permission.entity';
+import {
+  BreederSpeciesPermission,
+  BreederPermissionState,
+} from './entities/breeder-species-permission.entity';
 import { BreederSubspeciesPermission } from './entities/breeder-subspecies-permission.entity';
 import {
   BreederPermissionAction,
@@ -136,6 +147,9 @@ const PRIVILEGES =
           ParrotSaleListingImage,
           ParrotSaleListingCreationLedger,
           ...BREEDER_SCHEMA_ENTITIES,
+          ProductStockReservation,
+          Order,
+          OrderItem,
         ],
       });
       await source.initialize();
@@ -159,7 +173,7 @@ const PRIVILEGES =
         consumed boolean NOT NULL DEFAULT false, attempts integer NOT NULL DEFAULT 0,
         "createdAt" timestamptz NOT NULL DEFAULT now())`);
       await source.query(`CREATE TABLE public.products (id uuid PRIMARY KEY DEFAULT public.uuid_generate_v4(),
-      name varchar, status varchar, stock integer, images text[], "deletedAt" timestamptz)`);
+      name varchar, status varchar, stock integer, images text[], "updatedAt" timestamptz DEFAULT now(), "deletedAt" timestamptz)`);
       for (const name of [
         '20260926-create-seller-onboarding-v1.sql',
         '20261003-create-parrot-sale-listings-v1.sql',
@@ -202,6 +216,37 @@ const PRIVILEGES =
       await migrate(TAXON);
       await migrate(KIND);
       await migrate(PRIVILEGES);
+      await migrate('20261022-add-breeder-listing-publication-hold-v1.sql');
+      // Extend only this disposable fixture to support the real publisher and
+      // public Product reads, with actual order/reservation records below.
+      await source.query(`ALTER TABLE products
+        ADD COLUMN sku varchar UNIQUE, ADD COLUMN description varchar,
+        ADD COLUMN "shortDescription" varchar, ADD COLUMN specifications jsonb,
+        ADD COLUMN "boughtTogetherProductIds" uuid[] NOT NULL DEFAULT '{}',
+        ADD COLUMN "lastEditedByName" varchar, ADD COLUMN price numeric(15,2) DEFAULT 100,
+        ADD COLUMN "discountPercent" integer, ADD COLUMN "discountPrice" numeric(15,2),
+        ADD COLUMN "colorVariants" jsonb, ADD COLUMN "categorySlug" varchar DEFAULT 'buy-parrot',
+        ADD COLUMN "subCategory" varchar, ADD COLUMN species varchar, ADD COLUMN subspecies varchar,
+        ADD COLUMN gender varchar, ADD COLUMN "ageStage" varchar, ADD COLUMN colors text[],
+        ADD COLUMN brand varchar, ADD COLUMN weight varchar, ADD COLUMN "productType" varchar,
+        ADD COLUMN size varchar, ADD COLUMN material varchar,
+        ADD COLUMN "tagPair" boolean DEFAULT false, ADD COLUMN "tagHandTame" boolean DEFAULT false,
+        ADD COLUMN "tagCustom" boolean DEFAULT false, ADD COLUMN "tagLuxury" boolean DEFAULT false,
+        ADD COLUMN "tagHealthGuarantee" boolean DEFAULT false, ADD COLUMN "tagFastShipping" boolean DEFAULT false,
+        ADD COLUMN "tagFreeShipping" boolean DEFAULT false, ADD COLUMN "tagCarryCage" boolean DEFAULT false,
+        ADD COLUMN "isAmazingOffer" boolean DEFAULT false, ADD COLUMN "amazingOfferEndsAt" timestamptz,
+        ADD COLUMN "createdAt" timestamp DEFAULT now()`);
+      await source.query(`CREATE TABLE orders (
+        id uuid PRIMARY KEY DEFAULT uuid_generate_v4(), "userId" uuid REFERENCES users(id),
+        status varchar DEFAULT 'pending',total numeric DEFAULT 100,address varchar,
+        "recipientName" varchar,"recipientMobile" varchar,"postalCode" varchar,
+        "paymentStatus" varchar DEFAULT 'pending',"paymentDate" timestamptz,"orderNumber" varchar UNIQUE,
+        "createdAt" timestamptz DEFAULT now(),"updatedAt" timestamptz DEFAULT now())`);
+      await source.query(`CREATE TABLE order_items (
+        id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),"orderId" uuid REFERENCES orders(id),
+        "productId" uuid REFERENCES products(id),quantity integer,price numeric,
+        "colorCode" varchar,"colorName" varchar)`);
+      await migrate('20261004-create-product-stock-reservations-v1.sql');
     }, 60_000);
 
     afterAll(async () => {
@@ -1140,9 +1185,9 @@ const PRIVILEGES =
         });
         return listingService().submit(v.user, listing.id);
       }
-      const approval = () =>
+      const approval = (runner?: QueryRunner) =>
         new ParrotSaleListingApprovalService(
-          source,
+          runner ? (connectionFor(runner) as never) : source,
           policy(),
           {
             read: () =>
@@ -1153,24 +1198,7 @@ const PRIVILEGES =
               Promise.resolve(['/uploads/parrot-sale-listings/fixture.webp']),
             remove: () => Promise.resolve(),
           } as never,
-          {
-            create: async (
-              manager: import('typeorm').EntityManager,
-              input: {
-                name: string;
-                publicPrice: number;
-                quantity: number;
-                images: string[];
-              },
-            ) => {
-              const id = randomUUID();
-              await manager.query(
-                `INSERT INTO products(id,name,status,stock,images,"isSellerListing") VALUES ($1,$2,'published',$3,$4,true)`,
-                [id, input.name, input.quantity, input.images],
-              );
-              return Object.assign(new Product(), { id, images: input.images });
-            },
-          } as never,
+          new SellerListingProductPublisherService(),
         );
 
       describe('separate ordinary and breeder listing flows', () => {
@@ -1470,24 +1498,16 @@ const PRIVILEGES =
               decision(2),
             ),
           ]);
-          expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(
-            1,
-          );
+          expect(results[1].status).toBe('fulfilled');
           const row = await source
             .getRepository(ParrotSaleListing)
             .findOneByOrFail({ id: listing.id });
           const permission = await source
             .getRepository(BreederSubspeciesPermission)
             .findOneByOrFail({ id: p.child.id });
-          if (row.status === ParrotSaleListingStatus.APPROVED) {
-            expect(permission.state).toBe('APPROVED');
-            expect(results[1]).toMatchObject({
-              status: 'rejected',
-              reason: {
-                status: 409,
-                response: { code: 'BREEDER_TAXON_UNPUBLISH_REQUIRED' },
-              },
-            });
+          expect(permission.state).toBe('REVOKED');
+          expect(row.publicationHeldAt).not.toBeNull();
+          if (row.productId) {
             expect(
               (
                 await source.query<Array<{ status: string }>>(
@@ -1495,15 +1515,12 @@ const PRIVILEGES =
                   [row.productId],
                 )
               )[0].status,
-            ).toBe('published');
-          } else {
-            expect(permission.state).toBe('REVOKED');
-            expect(row.productId).toBeNull();
+            ).toBe('draft');
+          } else
             expect(results[0]).toMatchObject({
               status: 'rejected',
               reason: { status: 403 },
             });
-          }
         });
 
         it('canonicalizes uppercase v5 IDs on real create/update while retaining permission enforcement', async () => {
@@ -1854,6 +1871,779 @@ const PRIVILEGES =
             await source.query('DROP FUNCTION test_fail_flow_ledger()');
           }
         });
+      });
+
+      describe('safe breeder revocation and unpublication', () => {
+        const publicProducts = () =>
+          new ProductsService(
+            source.getRepository(Product),
+            {} as never,
+            source,
+          );
+        async function published(v: Awaited<ReturnType<typeof eligible>>) {
+          const listing = await pendingBreeder(v);
+          return (
+            await approval().approve(listing.id, 'fixture-admin', {
+              publicPrice: 100,
+            })
+          ).listing;
+        }
+        async function snapshot(
+          table:
+            | 'orders'
+            | 'order_items'
+            | 'product_stock_reservations'
+            | 'parrot_sale_listing_images'
+            | 'parrot_sale_listing_creation_ledger',
+        ) {
+          // Fixed test table names only; no environment/input identifiers.
+          return source.query<unknown[]>(
+            `SELECT * FROM "${table}" ORDER BY id`.replace(
+              table === 'parrot_sale_listing_creation_ledger'
+                ? 'ORDER BY id'
+                : '__unused__',
+              'ORDER BY "listingId"',
+            ),
+          );
+        }
+        it('hold migration first run/rerun and compatible schema are safe; mismatched column/check fail closed', async () => {
+          const name = '20261022-add-breeder-listing-publication-hold-v1.sql';
+          await migrate(name);
+          await migrate(name);
+          for (const incompatible of [
+            'ALTER TABLE parrot_sale_listings ALTER COLUMN "publicationHeldAt" SET DEFAULT now()',
+            'ALTER TABLE parrot_sale_listings DROP CONSTRAINT "CHK_breeder_listing_publication_hold"; ALTER TABLE parrot_sale_listings ADD CONSTRAINT "CHK_breeder_listing_publication_hold" CHECK (true)',
+          ]) {
+            const runner = source.createQueryRunner();
+            await runner.connect();
+            await runner.startTransaction();
+            try {
+              await runner.query(incompatible);
+              const sql = await readFile(
+                resolve('scripts/migrations', name),
+                'utf8',
+              );
+              // Preserve the outer transaction: strip only transaction commands
+              // for this incompatible-object preflight test, then always rollback.
+              await expect(
+                runner.query(
+                  sql
+                    .replace(/^\\set[^\r\n]*(?:\r?\n)?/, '')
+                    .replace(/^BEGIN;$/m, '')
+                    .replace(/^COMMIT;$/m, ''),
+                ),
+              ).rejects.toThrow(/Incompatible breeder publication hold/);
+            } finally {
+              await runner.rollbackTransaction();
+              await runner.release();
+            }
+          }
+        });
+        it('atomically holds multiple listings, hides fresh public reads, preserves commercial/images/ledger, and requires explicit stock-preserving reapproval', async () => {
+          const v = await eligible(),
+            p = await approved(v);
+          const first = await published(v),
+            second = await published(v);
+          await source
+            .getRepository(Product)
+            .update(first.productId!, { stock: 0 });
+          const order = randomUUID(),
+            item = randomUUID(),
+            reservation = randomUUID();
+          await source.query(
+            'INSERT INTO orders(id,"userId","orderNumber") VALUES ($1,$2,$3)',
+            [order, v.user, randomUUID()],
+          );
+          await source.query(
+            'INSERT INTO order_items(id,"orderId","productId",quantity,price) VALUES ($1,$2,$3,1,100)',
+            [item, order, second.productId],
+          );
+          await source.query(
+            'INSERT INTO product_stock_reservations(id,"productId","userId","orderId",quantity,"idempotencyKey") VALUES ($1,$2,$3,$4,1,$5)',
+            [reservation, second.productId, v.user, order, randomUUID()],
+          );
+          const paidOrder = randomUUID();
+          await source.query(
+            `INSERT INTO orders(id,"userId","orderNumber","paymentStatus","paymentDate") VALUES ($1,$2,$3,'success',now())`,
+            [paidOrder, v.user, randomUUID()],
+          );
+          await source.query(
+            `INSERT INTO product_stock_reservations("productId","userId","orderId",quantity,"idempotencyKey",status) VALUES ($1,$2,$3,1,$4,'CONSUMED')`,
+            [first.productId, v.user, paidOrder, randomUUID()],
+          );
+          const before = await Promise.all([
+            snapshot('orders'),
+            snapshot('order_items'),
+            snapshot('product_stock_reservations'),
+            snapshot('parrot_sale_listing_images'),
+            snapshot('parrot_sale_listing_creation_ledger'),
+          ]);
+          const productsBefore = await source.getRepository(Product).find({
+            where: { id: In([first.productId!, second.productId!]) },
+            order: { id: 'ASC' },
+          });
+          const input = decision(2);
+          const result = await api().decide(
+            v.application,
+            p.child.id,
+            Kind.SUBSPECIES,
+            Decision.REVOKE,
+            'fixture-admin',
+            input,
+          );
+          expect(
+            result.events?.find(
+              (e) =>
+                e.subspeciesPermissionId === p.child.id &&
+                e.action === BreederPermissionAction.REVOKE,
+            ),
+          ).toMatchObject({
+            affectedListingCount: 2,
+            affectedProductCount: 2,
+            actorId: 'fixture-admin',
+            reason: input.reason,
+          });
+          const held = await source
+            .getRepository(ParrotSaleListing)
+            .find({ where: { sellerUserId: v.user } });
+          expect(held.every((l) => Boolean(l.publicationHeldAt))).toBe(true);
+          for (const previous of productsBefore) {
+            const current = await source
+              .getRepository(Product)
+              .findOneByOrFail({ id: previous.id });
+            expect(current.status).toBe('draft');
+            expect({
+              ...current,
+              status: previous.status,
+              updatedAt: previous.updatedAt,
+            }).toEqual(previous);
+            await expect(
+              publicProducts().findOnePublished(previous.id),
+            ).rejects.toMatchObject({ status: 404 });
+          }
+          const [list, search] = await Promise.all([
+            publicProducts().findAllPublished({ limit: 1000 }),
+            publicProducts().searchPublished({
+              q: 'Fixture bird',
+              limit: 1000,
+            }),
+          ]);
+          expect(
+            list.items.some(
+              (row) =>
+                row.id === first.productId || row.id === second.productId,
+            ),
+          ).toBe(false);
+          expect(
+            search.items.some(
+              (row) =>
+                row.id === first.productId || row.id === second.productId,
+            ),
+          ).toBe(false);
+          await api().decide(
+            v.application,
+            p.child.id,
+            Kind.SUBSPECIES,
+            Decision.REVOKE,
+            'fixture-admin',
+            input,
+          );
+          expect(
+            (
+              await source
+                .getRepository(ParrotSaleListing)
+                .findOneByOrFail({ id: first.id })
+            ).publicationHeldAt,
+          ).toEqual(held.find((l) => l.id === first.id)!.publicationHeldAt);
+          const reservations = new StockReservationsService(source);
+          await expect(reservations.consume(reservation)).rejects.toMatchObject(
+            { status: 409 },
+          );
+          const orders = new OrdersService(
+            source.getRepository(Order),
+            source.getRepository(OrderItem),
+            {} as never,
+            source,
+            reservations,
+          );
+          await expect(
+            orders.fulfillPaymentSuccess(order),
+          ).rejects.toMatchObject({ status: 409 });
+          await expect(
+            orders.fulfillPaymentSuccess(paidOrder),
+          ).resolves.toMatchObject({ paymentStatus: 'success' });
+          expect(
+            await Promise.all([
+              snapshot('orders'),
+              snapshot('order_items'),
+              snapshot('product_stock_reservations'),
+              snapshot('parrot_sale_listing_images'),
+              snapshot('parrot_sale_listing_creation_ledger'),
+            ]),
+          ).toEqual(before);
+          await api().decide(
+            v.application,
+            p.child.id,
+            Kind.SUBSPECIES,
+            Decision.REGRANT,
+            'fixture-admin',
+            decision(3),
+          );
+          expect(
+            (
+              await source
+                .getRepository(Product)
+                .findOneByOrFail({ id: first.productId! })
+            ).status,
+          ).toBe('draft');
+          const reapproved = await approval().approve(
+            first.id,
+            'fixture-admin',
+            { publicPrice: 120 },
+          );
+          expect(reapproved.product.stock).toBe(0);
+          expect(reapproved.listing.publicationHeldAt).toBeNull();
+          expect(
+            (
+              await source
+                .getRepository(Product)
+                .findOneByOrFail({ id: second.productId! })
+            ).status,
+          ).toBe('draft');
+          // Active reservation and order were never cancelled/consumed by regrant/reapproval.
+          expect(await snapshot('product_stock_reservations')).toEqual(
+            before[2],
+          );
+        });
+        it('generic image upload cannot restore a stale published seller Product after revocation', async () => {
+          const v = await eligible(),
+            permission = await approved(v),
+            listing = await published(v);
+          const stale = await source
+            .getRepository(Product)
+            .findOneByOrFail({ id: listing.productId! });
+          const service = publicProducts();
+          // Capture the real published row as an upload could before revoke commits.
+          jest.spyOn(service, 'findOne').mockResolvedValue(stale);
+          await api().decide(
+            v.application,
+            permission.child.id,
+            Kind.SUBSPECIES,
+            Decision.REVOKE,
+            'fixture-admin',
+            decision(2),
+          );
+          await expect(
+            service.addImage(stale.id, '/uploads/late-upload.webp'),
+          ).rejects.toMatchObject({ status: 400 });
+          const current = await source
+            .getRepository(Product)
+            .findOneByOrFail({ id: stale.id });
+          expect(current.status).toBe('draft');
+          expect(current.images).toEqual(stale.images);
+          expect(current.stock).toBe(stale.stock);
+        });
+        it('child-only revocation isolates approved siblings in the same application and preserves commercial history', async () => {
+          const v = await eligible(),
+            p = await approved(v);
+          const siblingTaxon = await source.getRepository(BirdSubspecies).save({
+            speciesId: v.species,
+            key: randomUUID(),
+            displayName: 'Same-application sibling',
+          });
+          const requested = await api().request(v.application, v.user, {
+            requestId: randomUUID(),
+            selections: [
+              { speciesId: v.species, subspeciesIds: [siblingTaxon.id] },
+            ],
+          });
+          const siblingPermission =
+            requested.speciesPermissions[0].subspeciesPermissions.find(
+              (child) => child.subspeciesId === siblingTaxon.id,
+            )!;
+          await api().decide(
+            v.application,
+            siblingPermission.id,
+            Kind.SUBSPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          );
+          const target = await published(v),
+            secondTarget = await published(v);
+          const sibling = await published({
+            ...v,
+            subspecies: siblingTaxon.id,
+          });
+          const ordinary = await listingService().create(v.user, {
+            ...ordinaryInput,
+            species: target.species,
+            subspecies: target.subspecies ?? undefined,
+          });
+          await source.getRepository(ParrotSaleListingImage).insert({
+            listingId: ordinary.id,
+            storageKey: randomUUID() + '.webp',
+            position: 0,
+          });
+          await listingService().submit(v.user, ordinary.id);
+          const ordinaryPublished = (
+            await approval().approve(ordinary.id, 'fixture-admin', {
+              publicPrice: 100,
+            })
+          ).listing;
+          const listingIds = [
+            target.id,
+            secondTarget.id,
+            sibling.id,
+            ordinaryPublished.id,
+          ];
+          const productIds = [
+            target.productId!,
+            secondTarget.productId!,
+            sibling.productId!,
+            ordinaryPublished.productId!,
+          ];
+          // Distinct remaining stocks make any accidental stock reset observable.
+          for (const [index, productId] of productIds.entries()) {
+            await source
+              .getRepository(Product)
+              .update(productId, { stock: index + 2 });
+            const order = randomUUID();
+            await source.query(
+              'INSERT INTO orders(id,"userId","orderNumber") VALUES ($1,$2,$3)',
+              [order, v.user, randomUUID()],
+            );
+            await source.query(
+              'INSERT INTO order_items("orderId","productId",quantity,price) VALUES ($1,$2,1,100)',
+              [order, productId],
+            );
+            await source.query(
+              'INSERT INTO product_stock_reservations("productId","userId","orderId",quantity,"idempotencyKey") VALUES ($1,$2,$3,1,$4)',
+              [productId, v.user, order, randomUUID()],
+            );
+          }
+          const readProducts = () =>
+            source
+              .getRepository(Product)
+              .find({ where: { id: In(productIds) }, order: { id: 'ASC' } });
+          const readListings = () =>
+            source
+              .getRepository(ParrotSaleListing)
+              .find({ where: { id: In(listingIds) }, order: { id: 'ASC' } });
+          const readEvents = () =>
+            source.getRepository(BreederPermissionEvent).find({
+              where: { applicationId: v.application },
+              order: { id: 'ASC' },
+            });
+          const commercial = () =>
+            Promise.all([
+              snapshot('orders'),
+              snapshot('order_items'),
+              snapshot('product_stock_reservations'),
+              snapshot('parrot_sale_listing_images'),
+              snapshot('parrot_sale_listing_creation_ledger'),
+            ]);
+          const productsBefore = await readProducts(),
+            listingsBefore = await readListings();
+          const eventsBefore = await readEvents(),
+            commercialBefore = await commercial();
+          const parentBefore = await source
+            .getRepository(BreederSpeciesPermission)
+            .findOneByOrFail({ id: p.parent.id });
+          const siblingBefore = await source
+            .getRepository(BreederSubspeciesPermission)
+            .findOneByOrFail({ id: siblingPermission.id });
+          expect(siblingBefore.applicationId).toBe(v.application);
+          expect(siblingBefore.speciesPermissionId).toBe(parentBefore.id);
+          expect(siblingBefore.state).toBe(BreederPermissionState.APPROVED);
+          const input = decision(2);
+          await api().decide(
+            v.application,
+            p.child.id,
+            Kind.SUBSPECIES,
+            Decision.REVOKE,
+            'fixture-admin',
+            input,
+          );
+          const held = await readListings();
+          for (const before of listingsBefore) {
+            const current = held.find((listing) => listing.id === before.id)!;
+            if ([target.id, secondTarget.id].includes(before.id)) {
+              expect(current.publicationHeldAt).toBeInstanceOf(Date);
+              expect({
+                ...current,
+                publicationHeldAt: before.publicationHeldAt,
+                updatedAt: before.updatedAt,
+              }).toEqual(before);
+            } else expect(current).toEqual(before);
+          }
+          const verifyProducts = async () => {
+            for (const before of productsBefore) {
+              const current = await source
+                .getRepository(Product)
+                .findOneByOrFail({ id: before.id });
+              if (
+                [target.productId, secondTarget.productId].includes(before.id)
+              ) {
+                expect(current.status).toBe('draft');
+                expect({
+                  ...current,
+                  status: before.status,
+                  updatedAt: before.updatedAt,
+                }).toEqual(before);
+              } else {
+                expect(current).toEqual(before);
+                await expect(
+                  publicProducts().findOnePublished(current.id),
+                ).resolves.toMatchObject({ id: current.id });
+              }
+            }
+          };
+          await verifyProducts();
+          expect(
+            await source
+              .getRepository(BreederSpeciesPermission)
+              .findOneByOrFail({ id: p.parent.id }),
+          ).toEqual(parentBefore);
+          expect(
+            await source
+              .getRepository(BreederSubspeciesPermission)
+              .findOneByOrFail({ id: siblingPermission.id }),
+          ).toEqual(siblingBefore);
+          expect(
+            await source
+              .getRepository(BreederSubspeciesPermission)
+              .findOneByOrFail({ id: p.child.id }),
+          ).toMatchObject({
+            state: BreederPermissionState.REVOKED,
+            revision: 3,
+          });
+          const eventsAfter = await readEvents();
+          const historicIds = new Set(eventsBefore.map((event) => event.id));
+          expect(
+            eventsAfter.filter((event) => historicIds.has(event.id)),
+          ).toEqual(eventsBefore);
+          const added = eventsAfter.filter(
+            (event) => !historicIds.has(event.id),
+          );
+          expect(added).toHaveLength(1);
+          expect(added[0]).toMatchObject({
+            applicationId: v.application,
+            subspeciesPermissionId: p.child.id,
+            speciesPermissionId: null,
+            action: BreederPermissionAction.REVOKE,
+            fromState: BreederPermissionState.APPROVED,
+            toState: BreederPermissionState.REVOKED,
+            revision: 3,
+            actorType: 'ADMIN',
+            actorId: 'fixture-admin',
+            reason: input.reason,
+            requestId: input.requestId,
+            affectedListingCount: 2,
+            affectedProductCount: 2,
+          });
+          expect(await commercial()).toEqual(commercialBefore);
+          // Same request is a replay, not another revocation/history mutation.
+          await api().decide(
+            v.application,
+            p.child.id,
+            Kind.SUBSPECIES,
+            Decision.REVOKE,
+            'fixture-admin',
+            input,
+          );
+          expect(await readEvents()).toEqual(eventsAfter);
+          await api().decide(
+            v.application,
+            p.child.id,
+            Kind.SUBSPECIES,
+            Decision.REGRANT,
+            'fixture-admin',
+            decision(3),
+          );
+          expect(
+            await source
+              .getRepository(BreederSubspeciesPermission)
+              .findOneByOrFail({ id: p.child.id }),
+          ).toMatchObject({
+            state: BreederPermissionState.APPROVED,
+            revision: 4,
+          });
+          expect(await readListings()).toEqual(held);
+          await verifyProducts();
+          expect(await commercial()).toEqual(commercialBefore);
+          expect(
+            await source
+              .getRepository(BreederSubspeciesPermission)
+              .findOneByOrFail({ id: siblingPermission.id }),
+          ).toEqual(siblingBefore);
+          const finalEvents = await readEvents();
+          expect(
+            finalEvents.filter((event) =>
+              eventsAfter.some((previous) => previous.id === event.id),
+            ),
+          ).toEqual(eventsAfter);
+          expect(finalEvents).toHaveLength(eventsBefore.length + 2);
+          expect(
+            finalEvents.find(
+              (event) => event.action === BreederPermissionAction.REGRANT,
+            ),
+          ).toMatchObject({
+            subspeciesPermissionId: p.child.id,
+            revision: 4,
+            affectedListingCount: 0,
+            affectedProductCount: 0,
+          });
+        });
+        it('parent revoke holds all its children; independent subspecies and ORDINARY rows remain untouched', async () => {
+          const v = await eligible(),
+            p = await approved(v);
+          const extra = await source.getRepository(BirdSubspecies).save({
+            speciesId: v.species,
+            key: randomUUID(),
+            displayName: 'Explicit extra child',
+          });
+          const request = await api().request(v.application, v.user, {
+            requestId: randomUUID(),
+            selections: [{ speciesId: v.species, subspeciesIds: [extra.id] }],
+          });
+          const child =
+            request.speciesPermissions[0].subspeciesPermissions.find(
+              (c) => c.subspeciesId === extra.id,
+            )!;
+          await api().decide(
+            v.application,
+            child.id,
+            Kind.SUBSPECIES,
+            Decision.APPROVE,
+            'fixture-admin',
+            decision(),
+          );
+          const one = await published(v),
+            two = await published({ ...v, subspecies: extra.id });
+          const other = await eligible();
+          await approved(other);
+          const untouched = await published(other);
+          const ordinary = await listingService().create(v.user, ordinaryInput);
+          const result = await api().decide(
+            v.application,
+            p.parent.id,
+            Kind.SPECIES,
+            Decision.REVOKE,
+            'fixture-admin',
+            decision(2),
+          );
+          expect(
+            result.speciesPermissions[0].subspeciesPermissions.every(
+              (c) => c.state === BreederPermissionState.REVOKED,
+            ),
+          ).toBe(true);
+          expect(
+            result.events?.find(
+              (e) =>
+                e.speciesPermissionId === p.parent.id &&
+                e.action === BreederPermissionAction.REVOKE,
+            ),
+          ).toMatchObject({ affectedListingCount: 2, affectedProductCount: 2 });
+          for (const row of [one, two])
+            expect(
+              (
+                await source
+                  .getRepository(Product)
+                  .findOneByOrFail({ id: row.productId! })
+              ).status,
+            ).toBe('draft');
+          expect(
+            (
+              await source
+                .getRepository(Product)
+                .findOneByOrFail({ id: untouched.productId! })
+            ).status,
+          ).toBe('published');
+          expect(
+            (
+              await source
+                .getRepository(ParrotSaleListing)
+                .findOneByOrFail({ id: ordinary.id })
+            ).publicationHeldAt,
+          ).toBeNull();
+        });
+
+        it.each(['approve-first', 'revoke-first'] as const)(
+          'serializes Admin approval versus revocation with verified DB blocking: %s',
+          async (order) => {
+            const v = await eligible(),
+              p = await approved(v),
+              listing = await pendingBreeder(v);
+            const first = source.createQueryRunner(),
+              second = source.createQueryRunner();
+            let competing: Promise<{ error?: unknown }> | undefined;
+            const revoke = (runner: QueryRunner) =>
+              new BreederTaxonService(
+                connectionFor(runner) as never,
+                policy(),
+              ).decide(
+                v.application,
+                p.child.id,
+                Kind.SUBSPECIES,
+                Decision.REVOKE,
+                'fixture-admin',
+                decision(2),
+              );
+            try {
+              await first.connect();
+              await second.connect();
+              await first.startTransaction();
+              await second.startTransaction();
+              await second.query("SET LOCAL lock_timeout='5s'");
+              const [{ pid: firstPid }] = await first.query<
+                Array<{ pid: number }>
+              >('SELECT pg_backend_pid() AS pid');
+              const [{ pid: secondPid }] = await second.query<
+                Array<{ pid: number }>
+              >('SELECT pg_backend_pid() AS pid');
+              if (order === 'approve-first')
+                await approval(first).approve(listing.id, 'fixture-admin', {
+                  publicPrice: 100,
+                });
+              else await revoke(first);
+              const work: Promise<unknown> =
+                order === 'approve-first'
+                  ? revoke(second)
+                  : approval(second).approve(listing.id, 'fixture-admin', {
+                      publicPrice: 100,
+                    });
+              competing = work.then(
+                () => ({}),
+                (error: unknown) => ({ error }),
+              );
+              let blocked = false;
+              const deadline = Date.now() + 3000;
+              while (!blocked && Date.now() < deadline) {
+                const [row] = await source.query<Array<{ blocked: boolean }>>(
+                  'SELECT $1::int=ANY(pg_blocking_pids($2::int)) AS blocked',
+                  [firstPid, secondPid],
+                );
+                blocked = row.blocked;
+                if (!blocked)
+                  await new Promise((resolve) => setTimeout(resolve, 10));
+              }
+              expect(blocked).toBe(true);
+              await first.commitTransaction();
+              const result = await competing;
+              if (order === 'approve-first') {
+                expect(result.error).toBeUndefined();
+                await second.commitTransaction();
+              } else {
+                expect(result.error).toMatchObject({ status: 403 });
+                await second.rollbackTransaction();
+              }
+              const current = await source
+                .getRepository(ParrotSaleListing)
+                .findOneByOrFail({ id: listing.id });
+              expect(current.publicationHeldAt).not.toBeNull();
+              expect(
+                (
+                  await source
+                    .getRepository(BreederSubspeciesPermission)
+                    .findOneByOrFail({ id: p.child.id })
+                ).state,
+              ).toBe('REVOKED');
+              if (current.productId) {
+                expect(
+                  (
+                    await source
+                      .getRepository(Product)
+                      .findOneByOrFail({ id: current.productId })
+                  ).status,
+                ).toBe('draft');
+                await expect(
+                  publicProducts().findOnePublished(current.productId),
+                ).rejects.toMatchObject({ status: 404 });
+              } else expect(order).toBe('revoke-first');
+              expect(
+                await source
+                  .getRepository(ParrotSaleListingCreationLedger)
+                  .count({ where: { sellerUserId: v.user } }),
+              ).toBe(1);
+            } finally {
+              if (first.isTransactionActive) await first.rollbackTransaction();
+              if (competing) await competing;
+              if (second.isTransactionActive)
+                await second.rollbackTransaction();
+              await second.release();
+              await first.release();
+            }
+          },
+        );
+        it.each(['product', 'audit'])(
+          'a %s write failure rolls back holds, Products and grant/audit atomically',
+          async (failure) => {
+            const v = await eligible(),
+              p = await approved(v);
+            const listing = await published(v);
+            const count = await source
+              .getRepository(BreederPermissionEvent)
+              .count({ where: { applicationId: v.application } });
+            const table =
+              failure === 'product' ? 'products' : 'breeder_permission_events';
+            await source.query(
+              `CREATE FUNCTION test_fail_hold() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'intentional hold failure'; END $$`,
+            );
+            await source.query(
+              `CREATE TRIGGER test_fail_hold BEFORE ${failure === 'product' ? 'UPDATE' : 'INSERT'} ON ${table} FOR EACH ROW EXECUTE FUNCTION test_fail_hold()`,
+            );
+            try {
+              await expect(
+                api().decide(
+                  v.application,
+                  p.child.id,
+                  Kind.SUBSPECIES,
+                  Decision.REVOKE,
+                  'fixture-admin',
+                  decision(2),
+                ),
+              ).rejects.toThrow('intentional hold failure');
+            } finally {
+              await source.query(`DROP TRIGGER test_fail_hold ON ${table}`);
+              await source.query('DROP FUNCTION test_fail_hold()');
+            }
+            expect(
+              (
+                await source
+                  .getRepository(Product)
+                  .findOneByOrFail({ id: listing.productId! })
+              ).status,
+            ).toBe('published');
+            expect(
+              (
+                await source
+                  .getRepository(ParrotSaleListing)
+                  .findOneByOrFail({ id: listing.id })
+              ).publicationHeldAt,
+            ).toBeNull();
+            expect(
+              (
+                await source
+                  .getRepository(BreederSubspeciesPermission)
+                  .findOneByOrFail({ id: p.child.id })
+              ).state,
+            ).toBe('APPROVED');
+            expect(
+              await source
+                .getRepository(BreederPermissionEvent)
+                .count({ where: { applicationId: v.application } }),
+            ).toBe(count);
+            await api().decide(
+              v.application,
+              p.child.id,
+              Kind.SUBSPECIES,
+              Decision.REVOKE,
+              'fixture-admin',
+              decision(2),
+            );
+          },
+        );
       });
       const eventCount = (id: string) =>
         source
@@ -2380,7 +3170,7 @@ const PRIVILEGES =
         );
         expect(await eventCount(v.application)).toBe(3);
       });
-      it('refuses revocation requiring Product unpublication; preserves Product, public images and commercial references', async () => {
+      it('revokes with atomic Product unpublication while preserving images and commercial references', async () => {
         const v = await eligible(),
           p = await approved(v);
         const listing = await source.transaction((manager) =>
@@ -2399,24 +3189,30 @@ const PRIVILEGES =
           `UPDATE parrot_sale_listings SET status='APPROVED',"productId"=$1,"approvedPrice"=100,"reviewedBy"='fixture-admin',"reviewedAt"=now() WHERE id=$2`,
           [product, listing],
         );
-        await expect(
-          api().decide(
-            v.application,
-            p.parent.id,
-            Kind.SPECIES,
-            Decision.REVOKE,
-            'fixture-admin',
-            decision(2),
+        const revoked = await api().decide(
+          v.application,
+          p.parent.id,
+          Kind.SPECIES,
+          Decision.REVOKE,
+          'fixture-admin',
+          decision(2),
+        );
+        expect(revoked.speciesPermissions[0].state).toBe('REVOKED');
+        expect(
+          revoked.events?.find(
+            (e) =>
+              e.speciesPermissionId === p.parent.id &&
+              e.action === BreederPermissionAction.REVOKE,
           ),
-        ).rejects.toMatchObject({
-          status: 409,
-          response: { code: 'BREEDER_TAXON_UNPUBLISH_REQUIRED' },
+        ).toMatchObject({
+          affectedListingCount: 1,
+          affectedProductCount: 1,
         });
         const [stored] = await source.query<
           Array<{ status: string; stock: number; images: string[] }>
         >('SELECT status,stock,images FROM products WHERE id=$1', [product]);
         expect(stored).toEqual({
-          status: 'published',
+          status: 'draft',
           stock: 3,
           images: ['/uploads/preserved.webp'],
         });
@@ -2426,7 +3222,7 @@ const PRIVILEGES =
             [product],
           ),
         ).toHaveLength(1);
-        expect(await eventCount(v.application)).toBe(4);
+        expect(await eventCount(v.application)).toBe(6);
       });
       it('permission revocation does not affect ordinary Products, listing rows or weekly ledger history', async () => {
         const v = await eligible(),
@@ -2585,6 +3381,12 @@ const PRIVILEGES =
             'fixture-admin',
             decision(),
           );
+          const pending = await pendingBreeder(v);
+          const publication = await approval().approve(
+            pending.id,
+            'fixture-admin',
+            { publicPrice: 100 },
+          );
           const result = await service.decide(
             v.application,
             parent.id,
@@ -2596,6 +3398,20 @@ const PRIVILEGES =
           expect(
             result.speciesPermissions[0].subspeciesPermissions[0].state,
           ).toBe('REVOKED');
+          expect(
+            (
+              await source
+                .getRepository(Product)
+                .findOneByOrFail({ id: publication.product.id })
+            ).status,
+          ).toBe('draft');
+          expect(
+            (
+              await source
+                .getRepository(ParrotSaleListing)
+                .findOneByOrFail({ id: pending.id })
+            ).publicationHeldAt,
+          ).not.toBeNull();
           expect(await eventCount(v.application)).toBe(6);
         } finally {
           if (runtime.isInitialized) await runtime.destroy();

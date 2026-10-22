@@ -58,7 +58,14 @@ export class ParrotSaleListingApprovalService {
             ParrotSaleListingErrorCode.NOT_FOUND,
             'Parrot sale listing not found',
           );
-        if (listing.status !== ParrotSaleListingStatus.PENDING_REVIEW)
+        if (
+          listing.status !== ParrotSaleListingStatus.PENDING_REVIEW &&
+          !(
+            listing.submissionKind === ListingSubmissionKind.BREEDER &&
+            listing.publicationHeldAt &&
+            listing.status === ParrotSaleListingStatus.APPROVED
+          )
+        )
           throw parrotSaleListingError(
             HttpStatus.CONFLICT,
             ParrotSaleListingErrorCode.INVALID_TRANSITION,
@@ -134,6 +141,7 @@ export class ParrotSaleListingApprovalService {
               manager,
               listing.productId,
               productInput,
+              listing.submissionKind === ListingSubmissionKind.BREEDER,
             )
           : {
               product: await this.products.create(manager, productInput),
@@ -151,6 +159,7 @@ export class ParrotSaleListingApprovalService {
             'Published seller listing product images are unavailable',
           );
 
+        listing.publicationHeldAt = null;
         listing.status = ParrotSaleListingStatus.APPROVED;
         listing.productId = product.id;
         listing.approvedPrice = input.publicPrice;

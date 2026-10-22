@@ -314,6 +314,7 @@ describe('ParrotSaleListingApprovalService', () => {
       value.manager,
       PRODUCT_ID,
       expect.objectContaining({ publicPrice: 130 }),
+      false,
     );
     expect(value.products.create).not.toHaveBeenCalled();
     expect(result.listing).toMatchObject({
@@ -388,53 +389,62 @@ describe('ProductsService seller-listing product helper', () => {
     expect(product).not.toHaveProperty('internalAdminNote');
   });
 
-  it('locks and republishes an existing linked seller Product without changing its identity', async () => {
-    const product = Object.assign(new Product(), {
-      id: PRODUCT_ID,
-      sku: 'BP140507170001',
-      status: ProductStatus.DRAFT,
-      isSellerListing: true,
-      images: ['/uploads/parrot-sale-listings/old.webp'],
-    });
-    const repository = {
-      findOne: jest.fn().mockResolvedValue(product),
-      save: jest.fn(async (value: Product) => value),
-    };
-    const manager = {
-      query: jest.fn().mockResolvedValue([]),
-      getRepository: jest.fn(() => repository),
-    };
-    const service = new SellerListingProductPublisherService();
-    const result = await service.republish(manager as never, PRODUCT_ID, {
-      name: 'Updated bird',
-      description: null,
-      publicPrice: 140,
-      quantity: 2,
-      species: 'Grey',
-      subspecies: null,
-      gender: null,
-      ageStage: null,
-      colors: null,
-      tagPair: false,
-      tagHandTame: true,
-      images: ['/uploads/parrot-sale-listings/new.webp'],
-    });
-    expect(repository.findOne).toHaveBeenCalledWith({
-      where: { id: PRODUCT_ID },
-      lock: { mode: 'pessimistic_write' },
-    });
-    expect(result.replacedImages).toEqual([
-      '/uploads/parrot-sale-listings/old.webp',
-    ]);
-    expect(result.product).toMatchObject({
-      id: PRODUCT_ID,
-      sku: 'BP140507170001',
-      name: 'Updated bird',
-      price: 140,
-      stock: 2,
-      status: ProductStatus.PUBLISHED,
-    });
-  });
+  it.each([false, true])(
+    'locks and republishes without changing identity; preserve breeder stock=%s',
+    async (preserveStock) => {
+      const product = Object.assign(new Product(), {
+        id: PRODUCT_ID,
+        sku: 'BP140507170001',
+        status: ProductStatus.DRAFT,
+        isSellerListing: true,
+        stock: 0,
+        images: ['/uploads/parrot-sale-listings/old.webp'],
+      });
+      const repository = {
+        findOne: jest.fn().mockResolvedValue(product),
+        save: jest.fn(async (value: Product) => value),
+      };
+      const manager = {
+        query: jest.fn().mockResolvedValue([]),
+        getRepository: jest.fn(() => repository),
+      };
+      const service = new SellerListingProductPublisherService();
+      const result = await service.republish(
+        manager as never,
+        PRODUCT_ID,
+        {
+          name: 'Updated bird',
+          description: null,
+          publicPrice: 140,
+          quantity: 2,
+          species: 'Grey',
+          subspecies: null,
+          gender: null,
+          ageStage: null,
+          colors: null,
+          tagPair: false,
+          tagHandTame: true,
+          images: ['/uploads/parrot-sale-listings/new.webp'],
+        },
+        preserveStock,
+      );
+      expect(repository.findOne).toHaveBeenCalledWith({
+        where: { id: PRODUCT_ID },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(result.replacedImages).toEqual([
+        '/uploads/parrot-sale-listings/old.webp',
+      ]);
+      expect(result.product).toMatchObject({
+        id: PRODUCT_ID,
+        sku: 'BP140507170001',
+        name: 'Updated bird',
+        price: 140,
+        stock: preserveStock ? 0 : 2,
+        status: ProductStatus.PUBLISHED,
+      });
+    },
+  );
 
   it('returns every field used by the normal public price and shipping card', async () => {
     const product = Object.assign(new Product(), {

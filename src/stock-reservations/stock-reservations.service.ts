@@ -174,6 +174,12 @@ export class StockReservationsService {
         };
       }
       const product = await this.lockProduct(manager, reservation.productId);
+      if (product.status !== ProductStatus.PUBLISHED)
+        throw stockReservationError(
+          HttpStatus.CONFLICT,
+          StockReservationErrorCode.PRODUCT_NOT_PUBLISHED,
+          'Product is not published',
+        );
       if (product.stock < reservation.quantity)
         throw stockReservationError(
           HttpStatus.CONFLICT,

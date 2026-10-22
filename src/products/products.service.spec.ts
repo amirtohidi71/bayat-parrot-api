@@ -844,3 +844,52 @@ function createFilteredQueryFixture() {
     queryBuilder,
   };
 }
+
+describe('seller Product publication cannot bypass listing grants/hold review', () => {
+  it.each([
+    'update',
+    'publishPendingById',
+    'publishBySku',
+    'addImage',
+  ] as const)(
+    'blocks general %s for seller-linked Products',
+    async (operation) => {
+      const product = Object.assign(new Product(), {
+        id: 'fixture',
+        sku: 'fixture',
+        isSellerListing: true,
+        status: ProductStatus.PENDING,
+      });
+      const repository = {
+        findOne: jest.fn().mockResolvedValue(product),
+        save: jest.fn(),
+      };
+      const service = new ProductsService(
+        repository as never,
+        {} as never,
+        {} as never,
+      );
+      const action =
+        operation === 'update'
+          ? service.update('fixture', { status: ProductStatus.PUBLISHED })
+          : operation === 'addImage'
+            ? service.addImage('fixture', '/uploads/fixture.webp')
+            : service[operation]('fixture');
+      await expect(action).rejects.toBeInstanceOf(BadRequestException);
+      expect(repository.save).not.toHaveBeenCalled();
+    },
+  );
+  it('bulk publication excludes seller Products', async () => {
+    const repository = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
+    const service = new ProductsService(
+      repository as never,
+      {} as never,
+      {} as never,
+    );
+    await expect(service.publishAllPending()).resolves.toBe(1);
+    expect(repository.update).toHaveBeenCalledWith(
+      { status: ProductStatus.PENDING, isSellerListing: false },
+      { status: ProductStatus.PUBLISHED },
+    );
+  });
+});

@@ -67,6 +67,7 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
   let administrator: DataSource;
   let source: DataSource;
   let databaseCreated = false;
+  let runtimeRoleCreated = false;
   let backfilledListingId: string;
   let backfilledSellerUserId: string;
   let backfilledCreatedAt: Date;
@@ -83,6 +84,12 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
     });
     await administrator.initialize();
     await assertLoopback(administrator, 'postgres');
+    const [runtimeRole] = await administrator.query<Array<{ exists: boolean }>>(
+      "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='bayat_app') AS exists",
+    );
+    if (runtimeRole.exists)
+      throw new Error('Isolated runtime role already exists; refusing reuse');
+
     const [existing] = await administrator.query<Array<{ exists: boolean }>>(
       'SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1) AS exists',
       [DATABASE_NAME],
@@ -93,6 +100,10 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
       'CREATE DATABASE "parrot_listing_disposable_test"',
     );
     databaseCreated = true;
+    await administrator.query(
+      'CREATE ROLE bayat_app NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT',
+    );
+    runtimeRoleCreated = true;
 
     source = new DataSource({
       type: 'postgres',
@@ -169,6 +180,7 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
     for (const migration of [
       '20261020-create-breeder-taxon-permissions-v1.sql',
       '20261020-add-parrot-listing-submission-kind-v1.sql',
+      '20261022-add-breeder-listing-publication-hold-v1.sql',
     ]) {
       const sql = await readFile(
         resolve('scripts/migrations', migration),
@@ -195,7 +207,12 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
           throw new Error('Disposable listing database cleanup failed');
       }
     } finally {
-      if (administrator?.isInitialized) await administrator.destroy();
+      try {
+        if (administrator?.isInitialized && runtimeRoleCreated)
+          await administrator.query('DROP ROLE bayat_app');
+      } finally {
+        if (administrator?.isInitialized) await administrator.destroy();
+      }
     }
   }, 60_000);
 

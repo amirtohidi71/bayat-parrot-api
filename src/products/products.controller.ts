@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   ParseUUIDPipe,
   Post,
@@ -26,11 +27,13 @@ export class ProductsController {
   ) {}
 
   @Get('search')
+  @Header('Cache-Control', 'no-store')
   search(@Query() searchDto: SearchProductsDto) {
     return this.productsService.searchPublished(searchDto);
   }
 
   @Get()
+  @Header('Cache-Control', 'no-store')
   findAll(@Query() filterDto: FindProductsDto) {
     return this.productsService.findAllPublished(filterDto);
   }
@@ -62,6 +65,7 @@ export class ProductsController {
   }
 
   @Get(':id')
+  @Header('Cache-Control', 'no-store')
   findOne(@Param('id') id: string) {
     return this.productsService.findOnePublished(id);
   }

@@ -41,6 +41,9 @@ export enum ParrotSaleListingStatus {
   'id',
 ])
 export class ParrotSaleListing {
+  @Column({ type: 'timestamptz', nullable: true })
+  publicationHeldAt: Date | null;
+
   @Column({
     type: 'varchar',
     length: 16,

@@ -1,9 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { isUUID } from 'class-validator';
-import { DataSource, EntityManager, In, QueryFailedError } from 'typeorm';
+import { DataSource, EntityManager, In, Not, QueryFailedError } from 'typeorm';
 import { Product, ProductStatus } from '../products/entities/product.entity';
-import { ParrotSaleListing } from '../parrot-sale-listings/entities/parrot-sale-listing.entity';
+import {
+  ParrotSaleListing,
+  ParrotSaleListingStatus,
+} from '../parrot-sale-listings/entities/parrot-sale-listing.entity';
 import { ListingSubmissionKind } from '../parrot-sale-listings/entities/listing-submission-kind';
 import {
   BreederApplication,
@@ -330,32 +333,16 @@ export class BreederTaxonService {
               p.speciesPermissionId === permission.id &&
               p.state === State.APPROVED,
           );
+      let impact:
+        | Awaited<ReturnType<BreederTaxonService['holdPublications']>>
+        | undefined;
       if (decision === Decision.REVOKE) {
-        // Product unpublication/fulfillment is a later phase. Never silently
-        // revoke permission while its published BREEDER Product remains live.
         const ids = (
           child
             ? affectedChildren
             : children.filter((p) => p.speciesPermissionId === permission.id)
         ).map((p) => p.id);
-        if (
-          ids.length &&
-          (await manager
-            .getRepository(ParrotSaleListing)
-            .createQueryBuilder('listing')
-            .innerJoin(Product, 'product', 'product.id = listing."productId"')
-            .where('listing."submissionKind" = :kind', {
-              kind: ListingSubmissionKind.BREEDER,
-            })
-            .andWhere('listing."breederSubspeciesPermissionId" IN (:...ids)', {
-              ids,
-            })
-            .andWhere('product.status = :status', {
-              status: ProductStatus.PUBLISHED,
-            })
-            .getExists())
-        )
-          taxonError(409, Code.UNPUBLISH_REQUIRED);
+        impact = await this.holdPublications(manager, application, ids);
         if (!child) {
           for (const affected of affectedChildren) {
             const from = affected.state;
@@ -375,6 +362,7 @@ export class BreederTaxonService {
               input.reason,
               input.requestId,
               hash,
+              impact.byPermission.get(affected.id),
             );
           }
         }
@@ -399,9 +387,87 @@ export class BreederTaxonService {
         input.reason,
         input.requestId,
         hash,
+        impact?.total,
       );
       return this.response(manager, application, true);
     });
+  }
+
+  // Caller owns lifecycle + Application/User/parent/child locks. Acquire
+  // Listing IDs, then Product IDs in ascending order. Never touch commercial
+  // rows, stock or image paths. A failure rolls back grants, holds and audit.
+  private async holdPublications(
+    manager: EntityManager,
+    application: BreederApplication,
+    permissionIds: string[],
+  ) {
+    const total = { listingCount: 0, productCount: 0 };
+    const byPermission = new Map<
+      string,
+      { listingCount: number; productCount: number }
+    >();
+    if (!permissionIds.length) return { total, byPermission };
+    const listings = await manager.getRepository(ParrotSaleListing).find({
+      where: {
+        submissionKind: ListingSubmissionKind.BREEDER,
+        breederApplicationId: application.id,
+        sellerUserId: application.userId,
+        breederSubspeciesPermissionId: In(permissionIds),
+        status: Not(ParrotSaleListingStatus.DELETED_BY_USER),
+      },
+      order: { id: 'ASC' },
+      lock: { mode: 'pessimistic_write' },
+    });
+    const ids = [
+      ...new Set(
+        listings
+          .map((l) => l.productId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ].sort();
+    const products = ids.length
+      ? await manager.getRepository(Product).find({
+          select: { id: true, status: true, isSellerListing: true },
+          where: { id: In(ids) },
+          withDeleted: true,
+          order: { id: 'ASC' },
+          lock: { mode: 'pessimistic_write' },
+        })
+      : [];
+    if (
+      products.length !== ids.length ||
+      products.some((p) => !p.isSellerListing)
+    )
+      taxonError(409, Code.UNPUBLISH_REQUIRED);
+    const published = new Set(
+      products
+        .filter((p) => p.status === ProductStatus.PUBLISHED)
+        .map((p) => p.id),
+    );
+    const heldAt = new Date();
+    for (const listing of listings) {
+      const key = listing.breederSubspeciesPermissionId!;
+      const counts = byPermission.get(key) ?? {
+        listingCount: 0,
+        productCount: 0,
+      };
+      if (!listing.publicationHeldAt) {
+        await manager
+          .getRepository(ParrotSaleListing)
+          .update(listing.id, { publicationHeldAt: heldAt });
+        counts.listingCount++;
+        total.listingCount++;
+      }
+      if (listing.productId && published.has(listing.productId)) {
+        await manager
+          .getRepository(Product)
+          .update(listing.productId, { status: ProductStatus.DRAFT });
+        counts.productCount++;
+        total.productCount++;
+      }
+      byPermission.set(key, counts);
+    }
+    return { total, byPermission };
   }
 
   private async lockApplication(
@@ -498,6 +564,7 @@ export class BreederTaxonService {
     reason: string | null,
     requestId: string,
     requestHash: string,
+    impact = { listingCount: 0, productCount: 0 },
   ) {
     await manager.getRepository(BreederPermissionEvent).insert({
       applicationId: permission.applicationId,
@@ -512,8 +579,8 @@ export class BreederTaxonService {
       reason,
       requestId,
       requestHash,
-      affectedListingCount: 0,
-      affectedProductCount: 0,
+      affectedListingCount: impact.listingCount,
+      affectedProductCount: impact.productCount,
     });
   }
 
@@ -608,6 +675,8 @@ export class BreederTaxonService {
               actorType: event.actorType,
               actorId: event.actorId,
               reason: event.reason,
+              affectedListingCount: event.affectedListingCount,
+              affectedProductCount: event.affectedProductCount,
               occurredAt: event.occurredAt,
             })),
           }

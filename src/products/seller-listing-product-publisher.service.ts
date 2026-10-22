@@ -47,6 +47,7 @@ export class SellerListingProductPublisherService {
     manager: EntityManager,
     productId: string,
     input: SellerListingProductInput,
+    preserveStock = false,
   ): Promise<{ product: Product; replacedImages: string[] }> {
     const products = manager.getRepository(Product);
     const product = await products.findOne({
@@ -56,9 +57,10 @@ export class SellerListingProductPublisherService {
     if (!product?.isSellerListing)
       throw new BadRequestException('Linked seller listing product is invalid');
     const replacedImages = [...(product.images ?? [])];
-    Object.assign(product, this.publicPayload(input), {
-      status: ProductStatus.PUBLISHED,
-    });
+    const payload = this.publicPayload(input);
+    // Breeder re-review must never replenish already sold/reserved stock.
+    if (preserveStock) delete payload.stock;
+    Object.assign(product, payload, { status: ProductStatus.PUBLISHED });
     return { product: await products.save(product), replacedImages };
   }
 

@@ -12,6 +12,8 @@ const imageResponse = (value: ParrotSaleListing) =>
 const candidateResponse = (value: ParrotSaleListing) => ({
   id: value.id,
   status: value.status,
+  publicationHeldAt: value.publicationHeldAt ?? null,
+  requiresReReview: Boolean(value.publicationHeldAt),
   submissionKind: value.submissionKind,
   speciesId: value.speciesId,
   subspeciesId: value.subspeciesId,

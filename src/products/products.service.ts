@@ -518,6 +518,10 @@ export class ProductsService {
     updateProductDto: UpdateProductDto & ProductEditorPayload,
   ): Promise<Product> {
     const product = await this.findOne(id);
+    if (product.isSellerListing)
+      throw new BadRequestException(
+        'Seller listing products must be reviewed through listing routes',
+      );
     const colorVariants =
       updateProductDto.colorVariants !== undefined
         ? this.normalizeColorVariants(updateProductDto.colorVariants)
@@ -777,6 +781,10 @@ export class ProductsService {
 
   async addImage(id: string, imageUrl: string): Promise<Product> {
     const product = await this.findOne(id);
+    if (product.isSellerListing)
+      throw new BadRequestException(
+        'Seller listing products must be reviewed through listing routes',
+      );
     product.images = [...(product.images ?? []), imageUrl];
     return this.productsRepository.save(product);
   }
@@ -805,7 +813,7 @@ export class ProductsService {
 
   async publishAllPending(): Promise<number> {
     const result = await this.productsRepository.update(
-      { status: ProductStatus.PENDING },
+      { status: ProductStatus.PENDING, isSellerListing: false },
       { status: ProductStatus.PUBLISHED },
     );
     return result.affected ?? 0;
@@ -813,6 +821,10 @@ export class ProductsService {
 
   async publishPendingById(id: string): Promise<Product> {
     const product = await this.findOne(id);
+    if (product.isSellerListing)
+      throw new BadRequestException(
+        'Seller listing products must be reviewed through listing routes',
+      );
     if (product.status !== ProductStatus.PENDING) {
       throw new BadRequestException('Only pending products can be published');
     }
@@ -826,6 +838,10 @@ export class ProductsService {
     if (!product) {
       throw new NotFoundException(`Product with sku ${sku} not found`);
     }
+    if (product.isSellerListing)
+      throw new BadRequestException(
+        'Seller listing products must be reviewed through listing routes',
+      );
     product.status = ProductStatus.PUBLISHED;
     return this.productsRepository.save(product);
   }
