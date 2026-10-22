@@ -12,6 +12,9 @@ const imageResponse = (value: ParrotSaleListing) =>
 const candidateResponse = (value: ParrotSaleListing) => ({
   id: value.id,
   status: value.status,
+  submissionKind: value.submissionKind,
+  speciesId: value.speciesId,
+  subspeciesId: value.subspeciesId,
   name: value.name,
   description: value.description,
   species: value.species,

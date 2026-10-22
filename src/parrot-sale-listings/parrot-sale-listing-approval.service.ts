@@ -1,3 +1,5 @@
+import { ListingSubmissionKind } from './entities/listing-submission-kind';
+import { assertBreederListingEligibility } from './breeder-listing-eligibility';
 import { lockSellerLifecycle } from '../seller-onboarding/seller-lifecycle';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
@@ -88,6 +90,14 @@ export class ParrotSaleListingApprovalService {
           listing.sellerUserId,
           manager,
         );
+        if (listing.submissionKind === ListingSubmissionKind.BREEDER) {
+          const linkage = await assertBreederListingEligibility(
+            manager,
+            listing.sellerUserId,
+            listing,
+          );
+          Object.assign(listing, linkage);
+        }
         const images = await manager
           .getRepository(ParrotSaleListingImage)
           .find({

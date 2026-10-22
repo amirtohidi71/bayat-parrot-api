@@ -1,3 +1,5 @@
+import { normalizeTaxonUuid } from '../../breeder-listings/breeder-taxon.uuid';
+import { OmitType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -9,6 +11,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Length,
   Max,
   MaxLength,
@@ -134,7 +137,30 @@ export class CreateParrotSaleListingDto {
   quantity?: number;
 }
 
+export class CreateBreederParrotSaleListingDto extends OmitType(
+  CreateParrotSaleListingDto,
+  ['species', 'subspecies'] as const,
+) {
+  @Transform(({ value }: { value: unknown }) => normalizeTaxonUuid(value))
+  @IsUUID()
+  speciesId: string;
+
+  @Transform(({ value }: { value: unknown }) => normalizeTaxonUuid(value))
+  @IsUUID()
+  subspeciesId: string;
+}
+
 export class UpdateParrotSaleListingDto {
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }: { value: unknown }) => normalizeTaxonUuid(value))
+  @IsUUID()
+  speciesId?: string;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }: { value: unknown }) => normalizeTaxonUuid(value))
+  @IsUUID()
+  subspeciesId?: string;
+
   @Transform(optionalTrimmedString)
   @ValidateIf((_object, value) => value !== undefined)
   @IsString()

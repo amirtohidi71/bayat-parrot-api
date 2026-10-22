@@ -400,7 +400,7 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
     ).toBe(1);
   });
 
-  it('exempts an approved BREEDER but not a breeder role without an approved application', async () => {
+  it('limits ordinary creates for approved and unapproved BREEDER roles', async () => {
     const approved = await eligibleUser('09111111111', UserRole.BREEDER);
     const unapproved = await eligibleUser('09222222222', UserRole.BREEDER);
     await source.getRepository(BreederApplication).save({
@@ -424,18 +424,22 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
       requestedPrice: 100,
     };
     await Promise.all(
-      Array.from({ length: 3 }, () => service.create(approved.id, input)),
+      Array.from({ length: 2 }, () => service.create(approved.id, input)),
     );
+    await expect(service.create(approved.id, input)).rejects.toMatchObject({
+      status: 409,
+      response: { code: ParrotSaleListingErrorCode.WEEKLY_LIMIT_REACHED },
+    });
     expect(
       await source
         .getRepository(ParrotSaleListing)
         .count({ where: { sellerUserId: approved.id } }),
-    ).toBe(3);
+    ).toBe(2);
     expect(
       await source.getRepository(ParrotSaleListingCreationLedger).count({
         where: { sellerUserId: approved.id },
       }),
-    ).toBe(3);
+    ).toBe(2);
 
     await service.create(unapproved.id, input);
     await service.create(unapproved.id, input);
@@ -1178,7 +1182,7 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
     ).rejects.toThrow('immutable');
   });
 
-  it('reverification breeder revocation demotes atomically and falls back to ledger quota immediately', async () => {
+  it('reverification breeder revocation demotes atomically and preserves ordinary ledger quota even after reapproval', async () => {
     const { user, application } = await approvedBreeder();
     const service = onboardingService();
     await listingService().create(user.id, listingInput);
@@ -1210,12 +1214,15 @@ describeDatabase('Parrot listing weekly quota on real PostgreSQL', () => {
     await service.approveBreeder(fresh.id, 'admin');
     await expect(
       listingService().create(user.id, listingInput),
-    ).resolves.toBeDefined();
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'PARROT_LISTING_WEEKLY_LIMIT_REACHED' },
+    });
     expect(
       await source
         .getRepository(ParrotSaleListingCreationLedger)
         .count({ where: { sellerUserId: user.id } }),
-    ).toBe(3);
+    ).toBe(2);
     expect(
       await source
         .getRepository(BreederApplication)

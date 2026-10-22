@@ -1,3 +1,4 @@
+import { normalizeTaxonUuid } from './breeder-taxon.uuid';
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -14,8 +15,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-const uuid = ({ value }: { value: unknown }) =>
-  typeof value === 'string' ? value.trim().toLowerCase() : value;
+const uuid = ({ value }: { value: unknown }) => normalizeTaxonUuid(value);
 
 export class BreederTaxonSelectionDto {
   @Transform(uuid)

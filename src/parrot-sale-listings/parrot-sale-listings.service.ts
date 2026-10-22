@@ -1,3 +1,5 @@
+import { ListingSubmissionKind } from './entities/listing-submission-kind';
+import { assertBreederListingEligibility } from './breeder-listing-eligibility';
 import {
   HttpStatus,
   Injectable,
@@ -10,7 +12,6 @@ import {
   DataSource,
   EntityManager,
   LessThan,
-  IsNull,
   MoreThanOrEqual,
   Not,
   Repository,
@@ -18,13 +19,10 @@ import {
 import { Product, ProductStatus } from '../products/entities/product.entity';
 import { lockSellerLifecycle } from '../seller-onboarding/seller-lifecycle';
 import { SellerEligibilityPolicy } from '../seller-onboarding/seller-eligibility.policy';
-import {
-  BreederApplication,
-  BreederApplicationStatus,
-} from '../seller-onboarding/entities/breeder-application.entity';
-import { User, UserRole } from '../users/entities/user.entity';
+import { User } from '../users/entities/user.entity';
 import {
   CreateParrotSaleListingDto,
+  CreateBreederParrotSaleListingDto,
   PARROT_SALE_LISTING_PAIR_GENDER,
   RejectParrotSaleListingDto,
   UpdateParrotSaleListingDto,
@@ -62,38 +60,81 @@ export class ParrotSaleListingsService {
     return this.options.getOptions();
   }
 
-  async create(sellerUserId: string, input: CreateParrotSaleListingDto) {
+  create(sellerUserId: string, input: CreateParrotSaleListingDto) {
+    return this.createListing(
+      sellerUserId,
+      input,
+      ListingSubmissionKind.ORDINARY,
+    );
+  }
+
+  createBreeder(
+    sellerUserId: string,
+    input: CreateBreederParrotSaleListingDto,
+  ) {
+    return this.createListing(
+      sellerUserId,
+      input,
+      ListingSubmissionKind.BREEDER,
+    );
+  }
+
+  private async createListing(
+    sellerUserId: string,
+    input: CreateParrotSaleListingDto | CreateBreederParrotSaleListingDto,
+    kind: ListingSubmissionKind,
+  ) {
     return this.dataSource.transaction(async (manager) => {
       await lockSellerLifecycle(manager, sellerUserId);
-      // Serialize creates for one seller before eligibility, quota, and INSERT.
-      const user = await manager.getRepository(User).findOne({
-        where: { id: sellerUserId },
-        lock: { mode: 'pessimistic_write' },
-      });
+      // Ordinary creates retain the seller-row quota lock. Breeder creates
+      // lock Application -> User -> permissions through the shared policy.
+      let linkage:
+        | Awaited<ReturnType<typeof assertBreederListingEligibility>>
+        | undefined;
+      if (kind === ListingSubmissionKind.BREEDER) {
+        const selected = input as CreateBreederParrotSaleListingDto;
+        linkage = await assertBreederListingEligibility(
+          manager,
+          sellerUserId,
+          selected,
+        );
+      } else {
+        await manager.getRepository(User).findOne({
+          where: { id: sellerUserId },
+          lock: { mode: 'pessimistic_write' },
+        });
+      }
       await this.eligibility.assertEligibleSellerInTransaction(
         sellerUserId,
         manager,
       );
-      await this.options.assertValidSelection(input, manager);
-      const approvedBreeder =
-        user?.role === UserRole.BREEDER &&
-        (await manager.getRepository(BreederApplication).exists({
-          where: {
-            userId: sellerUserId,
-            status: BreederApplicationStatus.APPROVED,
-            revokedAt: IsNull(),
-          },
-        }));
-      if (!approvedBreeder)
+      if (kind === ListingSubmissionKind.BREEDER) {
+        await this.options.assertValidColors(input.colors, manager);
+      } else {
+        await this.options.assertValidSelection(
+          input as CreateParrotSaleListingDto,
+          manager,
+        );
         await this.assertWeeklyCreateQuota(sellerUserId, manager);
+      }
       const listings = manager.getRepository(ParrotSaleListing);
       const listing = listings.create({
+        submissionKind: kind,
+        speciesId: linkage?.speciesId ?? null,
+        subspeciesId: linkage?.subspeciesId ?? null,
+        breederApplicationId: linkage?.breederApplicationId ?? null,
+        breederSubspeciesPermissionId:
+          linkage?.breederSubspeciesPermissionId ?? null,
         sellerUserId,
         status: ParrotSaleListingStatus.DRAFT,
         name: input.name,
         description: input.description ?? null,
-        species: input.species,
-        subspecies: input.subspecies ?? null,
+        species:
+          linkage?.species ?? (input as CreateParrotSaleListingDto).species,
+        subspecies:
+          linkage?.subspecies ??
+          (input as CreateParrotSaleListingDto).subspecies ??
+          null,
         gender:
           input.gender === PARROT_SALE_LISTING_PAIR_GENDER
             ? null
@@ -117,6 +158,7 @@ export class ParrotSaleListingsService {
       });
       const saved = await listings.save(listing);
       await manager.getRepository(ParrotSaleListingCreationLedger).insert({
+        submissionKind: kind,
         listingId: saved.id,
         sellerUserId: saved.sellerUserId,
         createdAt: saved.createdAt,
@@ -138,6 +180,7 @@ export class ParrotSaleListingsService {
       .count({
         where: {
           sellerUserId,
+          submissionKind: ListingSubmissionKind.ORDINARY,
           createdAt: And(MoreThanOrEqual(week.start), LessThan(week.end)),
         },
       });
@@ -240,14 +283,52 @@ export class ParrotSaleListingsService {
         sellerUserId,
         manager,
       );
-      await this.options.assertValidSelection(
-        {
-          species: input.species ?? listing.species,
-          subspecies: input.subspecies ?? listing.subspecies,
-          colors: input.colors ?? listing.colors,
-        },
-        manager,
-      );
+      if (listing.submissionKind === ListingSubmissionKind.BREEDER) {
+        if (
+          input.species !== undefined ||
+          input.subspecies !== undefined ||
+          (input.speciesId === undefined) !== (input.subspeciesId === undefined)
+        )
+          throw parrotSaleListingError(
+            400,
+            ParrotSaleListingErrorCode.INVALID_OPTION,
+            'Use both stable taxon IDs for breeder edits',
+          );
+        const linkage = await assertBreederListingEligibility(
+          manager,
+          sellerUserId,
+          {
+            ...listing,
+            speciesId: input.speciesId ?? listing.speciesId,
+            subspeciesId: input.subspeciesId ?? listing.subspeciesId,
+            // Changing taxa requires a new exact permission in the same application.
+            breederSubspeciesPermissionId: input.subspeciesId
+              ? undefined
+              : listing.breederSubspeciesPermissionId,
+          },
+          listing,
+        );
+        await this.options.assertValidColors(
+          input.colors ?? listing.colors,
+          manager,
+        );
+        Object.assign(listing, linkage);
+      } else {
+        if (input.speciesId !== undefined || input.subspeciesId !== undefined)
+          throw parrotSaleListingError(
+            400,
+            ParrotSaleListingErrorCode.INVALID_OPTION,
+            'Ordinary listings use existing display options',
+          );
+        await this.options.assertValidSelection(
+          {
+            species: input.species ?? listing.species,
+            subspecies: input.subspecies ?? listing.subspecies,
+            colors: input.colors ?? listing.colors,
+          },
+          manager,
+        );
+      }
       await this.prepareForEdit(listing, manager);
       this.applyUpdate(listing, input);
       const saved = await listings.save(listing);
@@ -274,6 +355,8 @@ export class ParrotSaleListingsService {
           sellerUserId,
           manager,
         );
+        if (listing.submissionKind === ListingSubmissionKind.BREEDER)
+          await assertBreederListingEligibility(manager, sellerUserId, listing);
         await this.prepareForEdit(listing, manager);
         const existing = await images.find({
           where: { listingId: listing.id },
@@ -322,6 +405,8 @@ export class ParrotSaleListingsService {
         sellerUserId,
         manager,
       );
+      if (listing.submissionKind === ListingSubmissionKind.BREEDER)
+        await assertBreederListingEligibility(manager, sellerUserId, listing);
       await this.prepareForEdit(listing, manager);
       const image = await images.findOne({
         where: { id: imageId, listingId: listing.id },
@@ -357,6 +442,8 @@ export class ParrotSaleListingsService {
         sellerUserId,
         manager,
       );
+      if (listing.submissionKind === ListingSubmissionKind.BREEDER)
+        await assertBreederListingEligibility(manager, sellerUserId, listing);
       const imageCount = await images.count({
         where: { listingId: listing.id },
       });

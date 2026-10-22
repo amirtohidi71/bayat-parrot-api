@@ -56,6 +56,16 @@ export class ParrotSaleListingOptionsService {
     }
   }
 
+  async assertValidColors(
+    colors: string[] | null | undefined,
+    manager: EntityManager,
+  ): Promise<void> {
+    if (!colors?.length) return;
+    const options = await this.getOptions(manager);
+    if (colors.some((color) => !options.colors.includes(color)))
+      this.invalidOption('colors');
+  }
+
   private async loadOptions(
     products: Repository<Product>,
   ): Promise<ParrotSaleListingOptions> {

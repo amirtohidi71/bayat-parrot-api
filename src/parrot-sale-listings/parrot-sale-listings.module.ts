@@ -1,3 +1,4 @@
+import { BreederParrotSaleListingsController } from './breeder-parrot-sale-listings.controller';
 import { Module } from '@nestjs/common';
 import { BREEDER_SCHEMA_ENTITIES } from '../breeder-listings/breeder-schema.entities';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -34,6 +35,7 @@ import { ParrotSaleListingsService } from './parrot-sale-listings.service';
   ],
   controllers: [
     ParrotSaleListingsController,
+    BreederParrotSaleListingsController,
     AdminParrotSaleListingsController,
     GodAdminParrotSaleListingsController,
   ],

@@ -1,4 +1,3 @@
-import { IsNull } from 'typeorm';
 /* eslint-disable @typescript-eslint/require-await -- transaction and repository mocks intentionally mirror async TypeORM APIs. */
 import { HttpException } from '@nestjs/common';
 import { Product, ProductStatus } from '../products/entities/product.entity';
@@ -233,6 +232,9 @@ describe('ParrotSaleListingsService customer workflow', () => {
     expect(value.txListings.create).toHaveBeenCalledWith(
       expect.objectContaining({
         sellerUserId: SELLER_ID,
+        submissionKind: 'ORDINARY',
+        breederApplicationId: null,
+        breederSubspeciesPermissionId: null,
         status: ParrotSaleListingStatus.DRAFT,
         quantity: 1,
         productId: null,
@@ -256,6 +258,7 @@ describe('ParrotSaleListingsService customer workflow', () => {
       value.txListings.save.mock.invocationCallOrder[0],
     );
     expect(value.txLedger.insert).toHaveBeenCalledWith({
+      submissionKind: 'ORDINARY',
       listingId: LISTING_ID,
       sellerUserId: SELLER_ID,
       createdAt: value.row.createdAt,
@@ -309,23 +312,26 @@ describe('ParrotSaleListingsService customer workflow', () => {
     expect(value.txListings.save).not.toHaveBeenCalled();
   });
 
-  it('exempts only a persisted BREEDER with an APPROVED breeder application', async () => {
+  it('enforces ordinary quota even for a persisted approved BREEDER', async () => {
     const value = context();
     value.row.seller.role = UserRole.BREEDER;
     value.txBreeders.exists.mockResolvedValue(true);
     value.txLedger.count.mockResolvedValue(2);
-
-    await expect(
+    await expectCode(
       value.service.create(SELLER_ID, {
         name: 'Bird',
         species: 'Grey',
         requestedPrice: 100,
       }),
-    ).resolves.toBeDefined();
-    expect(value.txBreeders.exists).toHaveBeenCalledWith({
-      where: { userId: SELLER_ID, status: 'APPROVED', revokedAt: IsNull() },
-    });
-    expect(value.txLedger.count).not.toHaveBeenCalled();
+      409,
+      ParrotSaleListingErrorCode.WEEKLY_LIMIT_REACHED,
+    );
+    expect(value.txBreeders.exists).not.toHaveBeenCalled();
+    const calls = value.txLedger.count.mock.calls as unknown as Array<
+      [{ where: { submissionKind: string } }]
+    >;
+    expect(calls[0]?.[0].where.submissionKind).toBe('ORDINARY');
+    expect(value.txListings.save).not.toHaveBeenCalled();
   });
 
   it('does not exempt a BREEDER without an approved application', async () => {
@@ -341,7 +347,7 @@ describe('ParrotSaleListingsService customer workflow', () => {
       409,
       ParrotSaleListingErrorCode.WEEKLY_LIMIT_REACHED,
     );
-    expect(value.txBreeders.exists).toHaveBeenCalledTimes(1);
+    expect(value.txBreeders.exists).not.toHaveBeenCalled();
     expect(value.txListings.save).not.toHaveBeenCalled();
   });
 
