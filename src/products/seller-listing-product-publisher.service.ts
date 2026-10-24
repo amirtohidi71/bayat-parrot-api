@@ -1,3 +1,5 @@
+import { BirdSpecies } from '../breeder-listings/entities/bird-species.entity';
+import { BirdSubspecies } from '../breeder-listings/entities/bird-subspecies.entity';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { DeepPartial, EntityManager, Repository } from 'typeorm';
 import {
@@ -48,6 +50,7 @@ export class SellerListingProductPublisherService {
     productId: string,
     input: SellerListingProductInput,
     preserveStock = false,
+    preserveUnmappedTaxonomy = false,
   ): Promise<{ product: Product; replacedImages: string[] }> {
     const products = manager.getRepository(Product);
     const product = await products.findOne({
@@ -60,6 +63,27 @@ export class SellerListingProductPublisherService {
     const payload = this.publicPayload(input);
     // Breeder re-review must never replenish already sold/reserved stock.
     if (preserveStock) delete payload.stock;
+    if (preserveUnmappedTaxonomy) {
+      // Never convert historical free-text/display snapshots through aliases.
+      // A keyed Product can follow an explicitly reviewed taxon edit; a legacy
+      // unmapped Product retains its exact original species/subspecies values.
+      const species =
+        typeof product.species === 'string' &&
+        typeof product.subspecies === 'string'
+          ? await manager
+              .getRepository(BirdSpecies)
+              .findOneBy({ key: product.species })
+          : null;
+      const child = species
+        ? await manager
+            .getRepository(BirdSubspecies)
+            .findOneBy({ speciesId: species.id, key: product.subspecies })
+        : null;
+      if (!child) {
+        delete payload.species;
+        delete payload.subspecies;
+      }
+    }
     Object.assign(product, payload, { status: ProductStatus.PUBLISHED });
     return { product: await products.save(product), replacedImages };
   }

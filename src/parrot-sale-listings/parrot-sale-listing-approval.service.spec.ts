@@ -1,3 +1,5 @@
+import { BirdSpecies } from '../breeder-listings/entities/bird-species.entity';
+import { BirdSubspecies } from '../breeder-listings/entities/bird-subspecies.entity';
 /* eslint-disable @typescript-eslint/require-await -- transaction/repository mocks mirror async TypeORM APIs. */
 import { HttpException } from '@nestjs/common';
 import { Product, ProductStatus } from '../products/entities/product.entity';
@@ -315,6 +317,7 @@ describe('ParrotSaleListingApprovalService', () => {
       PRODUCT_ID,
       expect.objectContaining({ publicPrice: 130 }),
       false,
+      false,
     );
     expect(value.products.create).not.toHaveBeenCalled();
     expect(result.listing).toMatchObject({
@@ -491,4 +494,91 @@ describe('ProductsService seller-listing product helper', () => {
     expect(publicProduct).not.toHaveProperty('requestedPrice');
     expect(publicProduct).not.toHaveProperty('internalAdminNote');
   });
+
+  it.each([
+    [
+      'unmapped historical labels',
+      'Legacy species label',
+      'Legacy child label',
+      false,
+    ],
+    ['existing canonical pair', 'old-species-key', 'old-child-key', true],
+    [
+      'parent key without an exact child',
+      'old-species-key',
+      'unmapped-child',
+      false,
+    ],
+  ] as const)(
+    'breeder re-review preserves legacy taxonomy but permits explicit keyed edits: %s',
+    async (_name, oldSpecies, oldChild, keyed) => {
+      const product = Object.assign(new Product(), {
+        id: PRODUCT_ID,
+        sku: 'BP-FIXTURE',
+        isSellerListing: true,
+        status: ProductStatus.DRAFT,
+        stock: 0,
+        species: oldSpecies,
+        subspecies: oldChild,
+        images: [],
+      });
+      const repository = {
+        findOne: jest.fn().mockResolvedValue(product),
+        save: jest.fn(async (value: Product) => value),
+      };
+      const speciesRepository = {
+        findOneBy: jest
+          .fn()
+          .mockResolvedValue(
+            oldSpecies === 'old-species-key'
+              ? { id: 'canonical-parent' }
+              : null,
+          ),
+      };
+      const childRepository = {
+        findOneBy: jest
+          .fn()
+          .mockResolvedValue(keyed ? { id: 'canonical-child' } : null),
+      };
+      const manager = {
+        getRepository: jest.fn((entity: unknown) => {
+          if (entity === Product) return repository;
+          if (entity === BirdSpecies) return speciesRepository;
+          if (entity === BirdSubspecies) return childRepository;
+          throw new Error('Unexpected taxonomy repository');
+        }),
+      };
+      const result = await new SellerListingProductPublisherService().republish(
+        manager as never,
+        PRODUCT_ID,
+        {
+          name: 'Reviewed bird',
+          description: null,
+          publicPrice: 150,
+          quantity: 10,
+          species: 'new-species-key',
+          subspecies: 'new-child-key',
+          gender: null,
+          ageStage: null,
+          colors: null,
+          tagPair: false,
+          tagHandTame: false,
+          images: [],
+        },
+        true,
+        true,
+      );
+      expect(result.product).toMatchObject({
+        species: keyed ? 'new-species-key' : oldSpecies,
+        subspecies: keyed ? 'new-child-key' : oldChild,
+        stock: 0,
+        sku: 'BP-FIXTURE',
+      });
+      if (oldSpecies === 'old-species-key')
+        expect(childRepository.findOneBy).toHaveBeenCalledWith({
+          speciesId: 'canonical-parent',
+          key: oldChild,
+        });
+    },
+  );
 });

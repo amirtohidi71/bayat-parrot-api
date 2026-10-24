@@ -1,3 +1,5 @@
+import { BirdSpecies } from '../breeder-listings/entities/bird-species.entity';
+import { BirdSubspecies } from '../breeder-listings/entities/bird-subspecies.entity';
 import { ListingSubmissionKind } from './entities/listing-submission-kind';
 import { assertBreederListingEligibility } from './breeder-listing-eligibility';
 import { lockSellerLifecycle } from '../seller-onboarding/seller-lifecycle';
@@ -97,6 +99,9 @@ export class ParrotSaleListingApprovalService {
           listing.sellerUserId,
           manager,
         );
+        let productTaxonomy:
+          | { species: string; subspecies: string }
+          | undefined;
         if (listing.submissionKind === ListingSubmissionKind.BREEDER) {
           const linkage = await assertBreederListingEligibility(
             manager,
@@ -104,6 +109,27 @@ export class ParrotSaleListingApprovalService {
             listing,
           );
           Object.assign(listing, linkage);
+          // Listing snapshots remain display labels. Only the public Product uses
+          // the immutable keys expected by existing category routes/filters.
+          const species = await manager.getRepository(BirdSpecies).findOneBy({
+            id: linkage.speciesId,
+          });
+          const subspecies = await manager
+            .getRepository(BirdSubspecies)
+            .findOneBy({
+              id: linkage.subspeciesId,
+              speciesId: linkage.speciesId,
+            });
+          if (!species?.key || !subspecies?.key)
+            throw parrotSaleListingError(
+              HttpStatus.FORBIDDEN,
+              'BREEDER_LISTING_NOT_ELIGIBLE',
+              'Canonical breeder taxonomy is unavailable',
+            );
+          productTaxonomy = {
+            species: species.key,
+            subspecies: subspecies.key,
+          };
         }
         const images = await manager
           .getRepository(ParrotSaleListingImage)
@@ -127,8 +153,8 @@ export class ParrotSaleListingApprovalService {
           description: listing.description,
           publicPrice: input.publicPrice,
           quantity: listing.quantity,
-          species: listing.species,
-          subspecies: listing.subspecies,
+          species: productTaxonomy?.species ?? listing.species,
+          subspecies: productTaxonomy?.subspecies ?? listing.subspecies,
           gender: listing.gender,
           ageStage: listing.ageStage,
           colors: listing.colors,
@@ -141,6 +167,7 @@ export class ParrotSaleListingApprovalService {
               manager,
               listing.productId,
               productInput,
+              listing.submissionKind === ListingSubmissionKind.BREEDER,
               listing.submissionKind === ListingSubmissionKind.BREEDER,
             )
           : {

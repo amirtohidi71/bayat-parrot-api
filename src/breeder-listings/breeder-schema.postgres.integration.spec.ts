@@ -1,3 +1,7 @@
+import {
+  generateTaxonomyBootstrapSql,
+  readTaxonomyManifest,
+} from '../scripts/bird-taxonomy-bootstrap';
 import { SellerListingProductPublisherService } from '../products/seller-listing-product-publisher.service';
 import { ProductsService } from '../products/products.service';
 import { StockReservationsService } from '../stock-reservations/stock-reservations.service';
@@ -3499,6 +3503,588 @@ const PRIVILEGES =
           actorId: 'review-fixture',
           action: 'REJECT',
           revision: 2,
+        });
+      });
+    });
+    describe('reviewed taxonomy bootstrap on disposable PostgreSQL', () => {
+      const manifest = () => readTaxonomyManifest();
+      const script = (value: unknown = manifest()) =>
+        generateTaxonomyBootstrapSql(value).replace(
+          /^\\set[^\r\n]*(?:\r?\n)?/,
+          '',
+        );
+      const body = (value: unknown = manifest()) =>
+        script(value)
+          .replace(/^BEGIN;\r?\n/m, '')
+          .replace(/^COMMIT;\r?\n/m, '');
+      async function execute(sql: string) {
+        const runner = source.createQueryRunner();
+        await runner.connect();
+        try {
+          await runner.query(sql);
+        } catch (error) {
+          await runner.query('ROLLBACK');
+          throw error;
+        } finally {
+          await runner.release();
+        }
+      }
+      const history = () =>
+        source.query<Array<{ snapshot: string }>>(`
+        SELECT md5(jsonb_build_array(
+          (SELECT jsonb_agg(x ORDER BY id) FROM public.products x),
+          (SELECT jsonb_agg(x ORDER BY id) FROM public.parrot_sale_listings x),
+          (SELECT jsonb_agg(x ORDER BY "listingId") FROM public.parrot_sale_listing_creation_ledger x),
+          (SELECT jsonb_agg(x ORDER BY id) FROM public.breeder_applications x),
+          (SELECT jsonb_agg(x ORDER BY id) FROM public.breeder_species_permissions x),
+          (SELECT jsonb_agg(x ORDER BY id) FROM public.breeder_subspecies_permissions x),
+          (SELECT jsonb_agg(x ORDER BY id) FROM public.breeder_permission_events x)
+        )::text) AS snapshot`);
+      const identities = () =>
+        manifest().species.flatMap((p) => [
+          p.id,
+          ...p.subspecies.map((c) => c.id),
+        ]);
+      async function rows() {
+        return source.query<
+          Array<{
+            id: string;
+            key: string;
+            displayName: string;
+            speciesId: string | null;
+            createdAt: Date;
+            updatedAt: Date;
+          }>
+        >(
+          `
+          SELECT id,key,"displayName",NULL::uuid AS "speciesId","createdAt","updatedAt" FROM bird_species WHERE id=ANY($1::uuid[])
+          UNION ALL SELECT id,key,"displayName","speciesId","createdAt","updatedAt" FROM bird_subspecies WHERE id=ANY($1::uuid[]) ORDER BY id`,
+          [identities()],
+        );
+      }
+      it('rolls back all parent/child inserts on a late failure, preserving permissions and history', async () => {
+        const before = await rows(),
+          beforeHistory = await history();
+        const sql = script().replace(
+          '\nCOMMIT;',
+          "\nDO $bootstrap_failure$ BEGIN RAISE EXCEPTION 'bootstrap late failure fixture'; END $bootstrap_failure$;\nCOMMIT;",
+        );
+        await expect(execute(sql)).rejects.toThrow(
+          'bootstrap late failure fixture',
+        );
+        expect(await rows()).toEqual(before);
+        expect(await history()).toEqual(beforeHistory);
+      });
+      it('isolates pg_temp staging from compatible public sentinels on success and full rollback', async () => {
+        const runner = source.createQueryRunner();
+        await runner.connect();
+        try {
+          await runner.query(`CREATE TABLE public.proposed_species (
+            id uuid PRIMARY KEY, key varchar(100) UNIQUE NOT NULL, "displayName" varchar(100) NOT NULL);
+            CREATE TABLE public.proposed_subspecies (
+            id uuid PRIMARY KEY, "speciesId" uuid NOT NULL, key varchar(100) NOT NULL,
+            "displayName" varchar(100) NOT NULL, UNIQUE("speciesId",key));
+            INSERT INTO public.proposed_species VALUES
+            ('11111111-1111-4111-8111-111111111111','sentinel-parent','Sentinel parent');
+            INSERT INTO public.proposed_subspecies VALUES
+            ('22222222-2222-4222-8222-222222222222','11111111-1111-4111-8111-111111111111','sentinel-child','Sentinel child');`);
+          const sentinels = () =>
+            runner.query<Array<{ snapshot: string }>>(`
+            SELECT jsonb_build_array(
+              (SELECT jsonb_agg(s ORDER BY id) FROM public.proposed_species s),
+              (SELECT jsonb_agg(s ORDER BY id) FROM public.proposed_subspecies s)
+            )::text AS snapshot`);
+          const original = await sentinels();
+          const before = await rows();
+          const beforeHistory = await history();
+          const failing = script().replace(
+            '\nCOMMIT;',
+            "\nDO $sentinel_failure$ BEGIN RAISE EXCEPTION 'sentinel rollback fixture'; END $sentinel_failure$;\nCOMMIT;",
+          );
+          await expect(runner.query(failing)).rejects.toThrow(
+            'sentinel rollback fixture',
+          );
+          await runner.query('ROLLBACK');
+          expect(await rows()).toEqual(before);
+          expect(await history()).toEqual(beforeHistory);
+          expect(await sentinels()).toEqual(original);
+          await runner.query(script());
+          const inserted = await rows();
+          expect(inserted).toHaveLength(73);
+          expect(inserted.filter((row) => row.speciesId === null)).toHaveLength(
+            14,
+          );
+          expect(inserted.filter((row) => row.speciesId !== null)).toHaveLength(
+            59,
+          );
+          expect(await sentinels()).toEqual(original);
+          expect(await history()).toEqual(beforeHistory);
+          expect(
+            await runner.query<
+              Array<{ parent: string | null; child: string | null }>
+            >(
+              "SELECT to_regclass('pg_temp.proposed_species')::text AS parent, to_regclass('pg_temp.proposed_subspecies')::text AS child",
+            ),
+          ).toEqual([{ parent: null, child: null }]);
+          await runner.query(script());
+          expect(await rows()).toEqual(inserted);
+          expect(await sentinels()).toEqual(original);
+        } finally {
+          await runner.query('ROLLBACK');
+          await runner.query(
+            'DROP TABLE IF EXISTS public.proposed_subspecies, public.proposed_species',
+          );
+          await runner.release();
+        }
+      });
+      it('first run creates 14 parents/59 children, exact rerun changes nothing and grants no permissions', async () => {
+        const beforeHistory = await history();
+        await execute(script());
+        const first = await rows();
+        expect(first).toHaveLength(73);
+        expect(first.filter((x) => x.speciesId === null)).toHaveLength(14);
+        expect(first.filter((x) => x.speciesId !== null)).toHaveLength(59);
+        await execute(script());
+        expect(await rows()).toEqual(first);
+        expect(await history()).toEqual(beforeHistory);
+      });
+      it('concurrent exact reruns serialize without changing stable identities or timestamps', async () => {
+        const before = await rows(),
+          beforeHistory = await history();
+        await Promise.all([execute(script()), execute(script())]);
+        expect(await rows()).toEqual(before);
+        expect(await history()).toEqual(beforeHistory);
+      });
+      it.each(['identity', 'key', 'parent', 'label', 'child-label'] as const)(
+        'rejects incompatible existing %s without modifying history',
+        async (kind) => {
+          await transaction(async (runner) => {
+            const proposed = structuredClone(manifest());
+            const parent = proposed.species[0],
+              child = parent.subspecies[0];
+            if (kind === 'identity') {
+              const foreign = randomUUID();
+              await runner.query(
+                'INSERT INTO bird_species(id,key,"displayName") VALUES ($1,$2,$3)',
+                [foreign, 'foreign-' + foreign, 'Unrelated fixture'],
+              );
+              parent.id = foreign;
+            } else if (kind === 'key') {
+              parent.id = randomUUID();
+              parent.subspecies.forEach((c) => {
+                c.id = randomUUID();
+              });
+            } else if (kind === 'parent') {
+              const foreign = randomUUID();
+              await runner.query(
+                'INSERT INTO bird_subspecies(id,"speciesId",key,"displayName") VALUES ($1,$2,$3,$4)',
+                [foreign, proposed.species[1].id, child.key, child.displayName],
+              );
+              child.id = foreign;
+            } else {
+              await runner.query(
+                kind === 'label'
+                  ? 'UPDATE bird_species SET "displayName"=$1 WHERE id=$2'
+                  : 'UPDATE bird_subspecies SET "displayName"=$1 WHERE id=$2',
+                [
+                  'Different reviewed label fixture',
+                  kind === 'label' ? parent.id : child.id,
+                ],
+              );
+            }
+            const before = await runner.query<Array<{ id: string }>>(
+              'SELECT id FROM bird_species ORDER BY id',
+            );
+            await rejects(runner, body(proposed), [], '23514');
+            expect(
+              await runner.query<Array<{ id: string }>>(
+                'SELECT id FROM bird_species ORDER BY id',
+              ),
+            ).toEqual(before);
+          });
+        },
+      );
+      it('real public category service matches canonical slug snapshots and exposes all 14 displayName incompatibilities', async () => {
+        await transaction(async (runner) => {
+          const products = new ProductsService(
+            runner.manager.getRepository(Product),
+            {} as never,
+            source,
+          );
+          const publisher = new SellerListingProductPublisherService();
+          for (const parent of manifest().species) {
+            const input = {
+              name: 'Taxonomy compatibility fixture',
+              description: null,
+              publicPrice: 100,
+              quantity: 1,
+              species: parent.key,
+              subspecies: parent.subspecies[0]?.key ?? null,
+              gender: null,
+              ageStage: null,
+              colors: null,
+              tagPair: false,
+              tagHandTame: false,
+              images: [],
+            };
+            const keyed = await publisher.create(runner.manager, input);
+            const named = await publisher.create(runner.manager, {
+              ...input,
+              species: parent.displayName,
+              subspecies: parent.subspecies[0]?.displayName ?? null,
+            });
+            const result = await products.findAllPublished({
+              category: 'buy-parrot',
+              species: parent.key,
+              limit: 100,
+            });
+            expect(result.items.map((x) => x.id)).toContain(keyed.id);
+            expect(result.items.map((x) => x.id)).not.toContain(named.id);
+            expect(
+              (
+                await runner.manager
+                  .getRepository(Product)
+                  .findOneByOrFail({ id: named.id })
+              ).species,
+            ).toBe(parent.displayName);
+          }
+        });
+      });
+
+      describe('canonical breeder publication compatibility', () => {
+        function services(runner: QueryRunner) {
+          const connection = {
+            transaction: <T>(work: (manager: EntityManager) => Promise<T>) =>
+              work(runner.manager),
+          };
+          const policy = new SellerEligibilityPolicy(
+            runner.manager.getRepository(User),
+            runner.manager.getRepository(SellerVerification),
+          );
+          const listings = new ParrotSaleListingsService(
+            connection as never,
+            runner.manager.getRepository(ParrotSaleListing),
+            policy,
+            {
+              delete: () => Promise.resolve(),
+              save: () => Promise.resolve(randomUUID() + '.webp'),
+            } as never,
+            {
+              assertValidSelection: () => Promise.resolve(),
+              assertValidColors: () => Promise.resolve(),
+            } as never,
+          );
+          const approval = new ParrotSaleListingApprovalService(
+            connection as never,
+            policy,
+            {
+              read: () =>
+                Promise.resolve({ buffer: Buffer.from('sanitized fixture') }),
+            } as never,
+            {
+              publish: () =>
+                Promise.resolve(['/uploads/parrot-sale-listings/fixture.webp']),
+              remove: () => Promise.resolve(),
+            } as never,
+            new SellerListingProductPublisherService(),
+          );
+          return {
+            listings,
+            approval,
+            taxa: new BreederTaxonService(connection as never, policy),
+            products: new ProductsService(
+              runner.manager.getRepository(Product),
+              {} as never,
+              source,
+            ),
+          };
+        }
+        async function seller(runner: QueryRunner) {
+          const v = await fixture(runner);
+          await runner.query("UPDATE users SET role='breeder' WHERE id=$1", [
+            v.user,
+          ]);
+          await runner.query(
+            `INSERT INTO seller_verifications("userId","firstName","lastName","birthDate","consentAcceptedAt","consentVersion",status,"reviewedBy","reviewedAt")
+          VALUES($1,'Test','Seller','2000-01-01',now(),'v1','APPROVED','fixture-admin',now())`,
+            [v.user],
+          );
+          return v;
+        }
+        async function grant(
+          runner: QueryRunner,
+          v: Awaited<ReturnType<typeof seller>>,
+          selections: RequestBreederTaxaDto['selections'],
+        ) {
+          const api = services(runner).taxa;
+          const requested = await api.request(v.application, v.user, {
+            requestId: randomUUID(),
+            selections,
+          });
+          for (const selection of selections) {
+            const parent = requested.speciesPermissions.find(
+              (p) => p.speciesId === selection.speciesId,
+            )!;
+            const input = () => ({
+              requestId: randomUUID(),
+              expectedRevision: 1,
+              reason: 'Explicit category compatibility fixture',
+            });
+            await api.decide(
+              v.application,
+              parent.id,
+              Kind.SPECIES,
+              Decision.APPROVE,
+              'fixture-admin',
+              input(),
+            );
+            for (const child of parent.subspeciesPermissions)
+              await api.decide(
+                v.application,
+                child.id,
+                Kind.SUBSPECIES,
+                Decision.APPROVE,
+                'fixture-admin',
+                input(),
+              );
+          }
+        }
+        async function publish(
+          runner: QueryRunner,
+          user: string,
+          speciesId: string,
+          subspeciesId: string,
+        ) {
+          const api = services(runner);
+          const draft = await api.listings.createBreeder(user, {
+            name: 'Canonical publication fixture',
+            speciesId,
+            subspeciesId,
+            requestedPrice: 100,
+            quantity: 2,
+          });
+          await runner.manager.getRepository(ParrotSaleListingImage).insert({
+            listingId: draft.id,
+            storageKey: randomUUID() + '.webp',
+            position: 0,
+          });
+          await api.listings.submit(user, draft.id);
+          return api.approval.approve(draft.id, 'fixture-admin', {
+            publicPrice: 150,
+          });
+        }
+        it('all 59 explicit children publish keyed Products into existing species list/search/detail while Listing retains Persian labels', async () => {
+          await transaction(async (runner) => {
+            const before = await runner.manager
+              .getRepository(Product)
+              .find({ order: { id: 'ASC' } });
+            const v = await seller(runner);
+            const selected = manifest().species.filter(
+              (p) => p.subspecies.length > 0,
+            );
+            await grant(
+              runner,
+              v,
+              selected.map((p) => ({
+                speciesId: p.id,
+                subspeciesIds: p.subspecies.map((c) => c.id),
+              })),
+            );
+            const api = services(runner);
+            for (const parent of selected)
+              for (const child of parent.subspecies) {
+                const result = await publish(
+                  runner,
+                  v.user,
+                  parent.id,
+                  child.id,
+                );
+                expect(result.listing).toMatchObject({
+                  species: parent.displayName,
+                  subspecies: child.displayName,
+                  speciesId: parent.id,
+                  subspeciesId: child.id,
+                  status: 'APPROVED',
+                });
+                expect(result.product).toMatchObject({
+                  species: parent.key,
+                  subspecies: child.key,
+                  price: 150,
+                  stock: 2,
+                  status: 'published',
+                  isSellerListing: true,
+                });
+                const list = await api.products.findAllPublished({
+                  category: 'buy-parrot',
+                  species: parent.key,
+                  limit: 100,
+                });
+                const search = await api.products.searchPublished({
+                  category: 'buy-parrot',
+                  species: parent.key,
+                  q: 'Canonical publication fixture',
+                  limit: 100,
+                });
+                const detail = await api.products.findOnePublished(
+                  result.product.id,
+                );
+                expect(list.items.map((p) => p.id)).toContain(
+                  result.product.id,
+                );
+                expect(search.items.map((p) => p.id)).toContain(
+                  result.product.id,
+                );
+                expect(detail).toMatchObject({
+                  species: parent.key,
+                  subspecies: child.key,
+                  isSellerListing: true,
+                });
+                for (const field of [
+                  'sellerUserId',
+                  'requestedPrice',
+                  'internalAdminNote',
+                  'storageKey',
+                  'breederApplicationId',
+                ])
+                  expect(detail).not.toHaveProperty(field);
+                const ledger = await runner.manager
+                  .getRepository(ParrotSaleListingCreationLedger)
+                  .findOneByOrFail({ listingId: result.listing.id });
+                expect(ledger.submissionKind).toBe('BREEDER');
+              }
+            for (const old of before)
+              expect(
+                await runner.manager
+                  .getRepository(Product)
+                  .findOneByOrFail({ id: old.id }),
+              ).toEqual(old);
+            await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+          });
+        });
+        it('new keyed Product remains category-compatible on explicit re-review and authorized taxon edits without stock resurrection', async () => {
+          await transaction(async (runner) => {
+            const v = await seller(runner),
+              parent = manifest().species[0],
+              first = parent.subspecies[0],
+              next = parent.subspecies[1];
+            await grant(runner, v, [
+              { speciesId: parent.id, subspeciesIds: [first.id, next.id] },
+            ]);
+            const api = services(runner);
+            const result = await publish(runner, v.user, parent.id, first.id);
+            await runner.query('UPDATE products SET stock=0 WHERE id=$1', [
+              result.product.id,
+            ]);
+            await api.listings.update(v.user, result.listing.id, {
+              speciesId: parent.id,
+              subspeciesId: next.id,
+            });
+            const reviewed = await api.approval.approve(
+              result.listing.id,
+              'fixture-admin',
+              { publicPrice: 160 },
+            );
+            expect(reviewed.product).toMatchObject({
+              id: result.product.id,
+              species: parent.key,
+              subspecies: next.key,
+              stock: 0,
+              status: 'published',
+            });
+            expect(reviewed.listing.subspecies).toBe(next.displayName);
+            expect(
+              (
+                await api.products.findAllPublished({
+                  category: 'buy-parrot',
+                  species: parent.key,
+                  limit: 100,
+                })
+              ).items.map((p) => p.id),
+            ).toContain(result.product.id);
+            await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+          });
+        });
+        it('re-review does not convert unmapped historical Product taxonomy or alter its identity/stock', async () => {
+          await transaction(async (runner) => {
+            const v = await seller(runner),
+              parent = manifest().species[0],
+              child = parent.subspecies[0];
+            await grant(runner, v, [
+              { speciesId: parent.id, subspeciesIds: [child.id] },
+            ]);
+            const api = services(runner),
+              result = await publish(runner, v.user, parent.id, child.id);
+            await runner.query(
+              'UPDATE products SET species=$1,subspecies=$2,stock=0,status=$3 WHERE id=$4',
+              [
+                'Historical species label',
+                'Historical child label',
+                'draft',
+                result.product.id,
+              ],
+            );
+            await runner.query(
+              'UPDATE parrot_sale_listings SET "publicationHeldAt"=now() WHERE id=$1',
+              [result.listing.id],
+            );
+            const reviewed = await api.approval.approve(
+              result.listing.id,
+              'fixture-admin',
+              { publicPrice: 160 },
+            );
+            expect(reviewed.product).toMatchObject({
+              id: result.product.id,
+              sku: result.product.sku,
+              species: 'Historical species label',
+              subspecies: 'Historical child label',
+              stock: 0,
+            });
+            expect(reviewed.listing).toMatchObject({
+              species: parent.displayName,
+              subspecies: child.displayName,
+              publicationHeldAt: null,
+            });
+            await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+          });
+        });
+        it('ordinary publication remains exact-text compatible and species without children grant no new breeder path', async () => {
+          await transaction(async (runner) => {
+            const v = await seller(runner),
+              api = services(runner);
+            const draft = await api.listings.create(v.user, {
+              name: 'Ordinary category fixture',
+              species: 'Existing species text',
+              subspecies: 'Existing child text',
+              requestedPrice: 100,
+            });
+            await runner.manager.getRepository(ParrotSaleListingImage).insert({
+              listingId: draft.id,
+              storageKey: randomUUID() + '.webp',
+              position: 0,
+            });
+            await api.listings.submit(v.user, draft.id);
+            const result = await api.approval.approve(
+              draft.id,
+              'fixture-admin',
+              { publicPrice: 150 },
+            );
+            expect(result.product).toMatchObject({
+              species: 'Existing species text',
+              subspecies: 'Existing child text',
+            });
+            const parent = manifest().species.find(
+              (p) => !p.subspecies.length,
+            )!;
+            await expect(
+              api.listings.createBreeder(v.user, {
+                name: 'No invented child',
+                speciesId: parent.id,
+                subspeciesId: parent.id,
+                requestedPrice: 100,
+              }),
+            ).rejects.toMatchObject({ status: 403 });
+            await runner.query('SET CONSTRAINTS ALL IMMEDIATE');
+          });
         });
       });
     });

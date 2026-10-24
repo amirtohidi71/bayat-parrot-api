@@ -1,0 +1,407 @@
+{
+  "schemaVersion": 1,
+  "manifestKey": "bayat-bird-taxonomy-v1",
+  "sourceRevisions": {
+    "backend": "6deea0746b34cf3a4141c6f0a40596944e3c241d",
+    "frontend": "d4ecc173d6ad5ed45f56163f358e3effecaa63ed"
+  },
+  "review": {
+    "status": "APPROVED",
+    "notes": [
+      "PUBLIC_CATEGORY_KEYS_RESOLVED_BY_TASK_351",
+      "FOUR_SPECIES_WITHOUT_EXPLICIT_SUBSPECIES_NO_SELF_LEAF",
+      "OWNER_APPROVED_EXISTING_BUSINESS_LABELS_TASK_355_NO_ALIAS_MERGE"
+    ]
+  },
+  "species": [
+    {
+      "id": "8da7b4f1-9020-4d8e-89cd-ddb2bc9641b9",
+      "key": "macaw",
+      "displayName": "ماکائو",
+      "subspecies": [
+        {
+          "id": "18168e59-a27c-49f9-afeb-a07b415da4ab",
+          "key": "blue-gold",
+          "displayName": "ماکائو آبی طلایی"
+        },
+        {
+          "id": "6458f4c8-99c8-4c34-8eb4-56771063fcc7",
+          "key": "red",
+          "displayName": "ماکائو قرمز"
+        },
+        {
+          "id": "4f26529a-e1cf-475a-b5f7-965a6a417230",
+          "key": "scarlet",
+          "displayName": "ماکائو اسکارلت"
+        },
+        {
+          "id": "dd0934f4-164b-4333-81c0-f12bb26d8b6b",
+          "key": "hahns",
+          "displayName": "ماکائو هانس"
+        },
+        {
+          "id": "ff5b2ea7-de0d-4d25-9610-c1147ea411e0",
+          "key": "harlequin",
+          "displayName": "ماکائو هارلی کویین"
+        }
+      ]
+    },
+    {
+      "id": "0e263776-9c65-425d-b335-af67408a4693",
+      "key": "cockatoo",
+      "displayName": "کاکادو",
+      "subspecies": [
+        {
+          "id": "fb4add15-e287-4d11-853a-0733939f220d",
+          "key": "sulphur-crested",
+          "displayName": "کاکادو تاج زرد (باراتا)"
+        },
+        {
+          "id": "fd5a8b5c-3363-404c-9e7c-9dc28e378a07",
+          "key": "umbrella",
+          "displayName": "کاکادو آمبرلا"
+        },
+        {
+          "id": "8837f990-117a-4781-b74d-42717a076d4e",
+          "key": "moluccan",
+          "displayName": "کاکادو مولوکان"
+        },
+        {
+          "id": "f1caed0e-40e3-4bd5-ac88-02fe95bf2c8a",
+          "key": "goffin",
+          "displayName": "کاکادو گوفین"
+        },
+        {
+          "id": "c5f8ee21-440a-4a2e-aaef-ecf3352b3faf",
+          "key": "bare-eyed",
+          "displayName": "کاکادو چشم برهنه"
+        },
+        {
+          "id": "0ad0725d-a2ab-4fc1-a8c7-345ba5094c09",
+          "key": "ducorps",
+          "displayName": "کاکادو دوکروپ"
+        },
+        {
+          "id": "6bc75701-bea4-494f-ae98-27d11f8411ba",
+          "key": "major-mitchell",
+          "displayName": "کاکادو ماژورمیشل"
+        },
+        {
+          "id": "b0cc1d98-9f38-4f95-a0ff-c6d971cea8ae",
+          "key": "galah",
+          "displayName": "کاکادو گالارز"
+        }
+      ]
+    },
+    {
+      "id": "e8d12e02-5dc3-4f17-bcdc-e5cd7777f5c7",
+      "key": "african-grey",
+      "displayName": "کاسکو",
+      "subspecies": [
+        {
+          "id": "a1886657-e567-4694-aa12-8800dc261b08",
+          "key": "red-tail",
+          "displayName": "دم قرمز (کنگو)"
+        },
+        {
+          "id": "9a1fff0d-be7d-4fcd-95eb-6b0c65c603a1",
+          "key": "chocolate-tail",
+          "displayName": "دم شکلاتی (تیمنه)"
+        }
+      ]
+    },
+    {
+      "id": "2c792be4-cc69-4581-aa10-2385bd62e4b7",
+      "key": "green-cheek",
+      "displayName": "گرین چیک",
+      "subspecies": [
+        {
+          "id": "a4afea01-e4e4-45e4-bfe4-4dbbf99ed585",
+          "key": "normal",
+          "displayName": "گرین‌چیک نرمال"
+        },
+        {
+          "id": "3005ea41-2cce-41ce-9248-d997cc827ef1",
+          "key": "ananasi-red",
+          "displayName": "گرین‌چیک آناناسی رد"
+        },
+        {
+          "id": "1a54e4be-4e54-4a28-b742-60c9c3b8fcfb",
+          "key": "double-red",
+          "displayName": "گرین‌چیک دبل رد"
+        },
+        {
+          "id": "f2012203-27e0-46be-ac8b-3a5ed3c37388",
+          "key": "extreme-red",
+          "displayName": "گرین‌چیک اکستریم رد"
+        },
+        {
+          "id": "16ba69be-5ad0-40ff-9dda-05116d4047c6",
+          "key": "yellow-side-red",
+          "displayName": "گرین‌چیک یلوساید رد"
+        },
+        {
+          "id": "6d739214-79e9-4faf-b5c7-565327bddbf5",
+          "key": "yellow-side-double-red",
+          "displayName": "گرین‌چیک یلوساید دبل رد"
+        },
+        {
+          "id": "7bc6b355-0dea-492e-b781-5584715dfb85",
+          "key": "yellow-side-extreme-red",
+          "displayName": "گرین‌چیک یلوساید اکستریم رد"
+        },
+        {
+          "id": "a983023f-6604-4996-9f08-8a79afca9ef7",
+          "key": "mint",
+          "displayName": "گرین‌چیک مینت"
+        },
+        {
+          "id": "537d981c-7ecd-48f3-942d-a6865e700b8d",
+          "key": "moon-cheek",
+          "displayName": "گرین‌چیک مونچیک"
+        },
+        {
+          "id": "a83ba076-804d-40bb-9d94-8e54f4e811f4",
+          "key": "sun-cheek",
+          "displayName": "گرین‌چیک سانچیک"
+        },
+        {
+          "id": "6ba8be92-dc2b-4da5-afa7-7386a8428654",
+          "key": "ro-cheek",
+          "displayName": "گرین‌چیک روچیک"
+        },
+        {
+          "id": "4d9052fc-cf23-477d-96b3-955629c8147e",
+          "key": "pineapple",
+          "displayName": "گرین‌چیک پاین‌اپل"
+        },
+        {
+          "id": "95e670ab-25be-4759-968d-e0348962723c",
+          "key": "turquoise",
+          "displayName": "گرین‌چیک تراکوئیس"
+        },
+        {
+          "id": "4625d671-24bb-48f3-a0df-36ad99478bb9",
+          "key": "pied",
+          "displayName": "گرین‌چیک پاید"
+        },
+        {
+          "id": "1a01e879-344d-4791-937c-7a99c7a717aa",
+          "key": "american-dilute",
+          "displayName": "گرین‌چیک امریکن دایلوت"
+        },
+        {
+          "id": "108a5872-e583-4578-aa35-61a38734373b",
+          "key": "violet",
+          "displayName": "گرین‌چیک ویولت"
+        }
+      ]
+    },
+    {
+      "id": "f6aacfab-2299-4cd5-9a19-a13c13c3a493",
+      "key": "quaker",
+      "displayName": "راهب",
+      "subspecies": [
+        {
+          "id": "86284e7f-5ac9-4e14-820e-4e4083539d89",
+          "key": "blue",
+          "displayName": "راهب آبی"
+        },
+        {
+          "id": "9dfc2f64-a331-4fde-8c45-e02e7afce19a",
+          "key": "green",
+          "displayName": "راهب سبز"
+        },
+        {
+          "id": "a56198e8-fb9c-4061-9b4a-b51d7cfc5e13",
+          "key": "pistachio",
+          "displayName": "راهب پسته‌ای"
+        },
+        {
+          "id": "fa972577-f906-4ca9-bed8-eb81c9e6f81a",
+          "key": "yellow",
+          "displayName": "راهب زرد"
+        },
+        {
+          "id": "45719c5c-0df9-474f-a623-285ac9f138dd",
+          "key": "white",
+          "displayName": "راهب سفید"
+        },
+        {
+          "id": "760206d8-a147-4c8e-a92b-498d43640bb5",
+          "key": "split",
+          "displayName": "راهب اسپیلت"
+        },
+        {
+          "id": "30919a67-a113-4acb-a98b-bf7ddef96e39",
+          "key": "turquoise",
+          "displayName": "راهب تراکوئیس"
+        },
+        {
+          "id": "ce7a1dbb-faf3-4328-8439-96570dc6f7e5",
+          "key": "blue-sky",
+          "displayName": "راهب بلواسکای"
+        },
+        {
+          "id": "a65eafef-7523-4f08-a953-d90eee4e34bd",
+          "key": "cross",
+          "displayName": "راهب کراس"
+        },
+        {
+          "id": "e3f9fb3b-ea71-4832-9dd5-bf5108e09c87",
+          "key": "violet",
+          "displayName": "راهب بنفش"
+        },
+        {
+          "id": "6ac566d6-c263-444a-920d-ffd0e9d31af8",
+          "key": "gray",
+          "displayName": "راهب خاکستری"
+        }
+      ]
+    },
+    {
+      "id": "284ff5a0-67f5-4eb9-8489-40c3453f8bf2",
+      "key": "alexandrine",
+      "displayName": "شاه طوطی",
+      "subspecies": []
+    },
+    {
+      "id": "e3d72769-2116-48d1-8e26-0d05b49d13fb",
+      "key": "senegal",
+      "displayName": "سنگال",
+      "subspecies": []
+    },
+    {
+      "id": "58e876c4-8124-4774-aa37-c18705d6dad3",
+      "key": "rose-ringed",
+      "displayName": "ملنگو",
+      "subspecies": []
+    },
+    {
+      "id": "8a92db55-5850-46c4-aa7b-6406533e642e",
+      "key": "sun-conure",
+      "displayName": "خورشیدی",
+      "subspecies": [
+        {
+          "id": "59c8a9a7-8b03-4fed-9625-22b6cebbc13e",
+          "key": "sun-conure",
+          "displayName": "سان کانور"
+        },
+        {
+          "id": "4775c04c-45a5-4e4a-9378-ff8b4af05408",
+          "key": "jenday-conure",
+          "displayName": "ژاندی کانور"
+        },
+        {
+          "id": "e5866f37-a129-497a-8230-777c17fad848",
+          "key": "nanday-conure",
+          "displayName": "ناندی کانور"
+        }
+      ]
+    },
+    {
+      "id": "c15c3803-f8f9-46ff-b55c-ae27398bc65c",
+      "key": "rosella",
+      "displayName": "رزیلا",
+      "subspecies": [
+        {
+          "id": "59875596-9568-46f6-b277-7218529ef9f0",
+          "key": "rosella",
+          "displayName": "رزیلا"
+        },
+        {
+          "id": "972ce15b-58ca-4794-87cf-2f3119912d11",
+          "key": "shakila",
+          "displayName": "شکیلا"
+        }
+      ]
+    },
+    {
+      "id": "91b2d275-f231-4b2f-83ea-5a0c89ab7b04",
+      "key": "eclectus",
+      "displayName": "اکلکتوس",
+      "subspecies": [
+        {
+          "id": "a67aca8d-6356-416f-9446-88ba2008eba3",
+          "key": "salmon",
+          "displayName": "سالمون"
+        },
+        {
+          "id": "e9f8129b-b7ed-49e2-b480-9a5f341fad13",
+          "key": "vosmaeri",
+          "displayName": "وسماری"
+        }
+      ]
+    },
+    {
+      "id": "d3d676c2-d4da-4d4e-8add-5761a8a6a034",
+      "key": "lorikeet",
+      "displayName": "لوری‌کیت",
+      "subspecies": [
+        {
+          "id": "c8284623-6a80-4f77-885c-9907509363bd",
+          "key": "black",
+          "displayName": "لوریکیت بلک"
+        },
+        {
+          "id": "eb595d14-8394-476a-b6c1-905321e6403b",
+          "key": "rainbow",
+          "displayName": "لوریکیت رنگین‌کمانی"
+        },
+        {
+          "id": "ff619bc5-dd25-4ded-9e46-49469a8a95b5",
+          "key": "black-capped",
+          "displayName": "لوریکیت بلک کپد"
+        },
+        {
+          "id": "79f04325-bd79-4259-9910-b37b75eda8b7",
+          "key": "red",
+          "displayName": "لوریکیت رد"
+        },
+        {
+          "id": "b34e2318-969d-4bed-bf55-df126b1732be",
+          "key": "blue-strong",
+          "displayName": "لوریکیت بلو استرانگ"
+        },
+        {
+          "id": "e03d1b94-6b78-41da-bb27-6aa801df5bb3",
+          "key": "perfect",
+          "displayName": "لوریکیت پرفکت"
+        },
+        {
+          "id": "62bdafaa-6481-447b-a72c-e99347efe92c",
+          "key": "yellow-collar",
+          "displayName": "لوری یقه زرد"
+        },
+        {
+          "id": "d78603df-5d16-4d21-b321-04d56d133cde",
+          "key": "green-naped",
+          "displayName": "لوری پالتو سبز"
+        }
+      ]
+    },
+    {
+      "id": "11cdbc32-b623-436a-bbd7-8166e90f42b4",
+      "key": "cockatiel",
+      "displayName": "عروس هلندی",
+      "subspecies": []
+    },
+    {
+      "id": "e291794a-1adb-49a1-8cb5-e8a69e153920",
+      "key": "lovebird",
+      "displayName": "کوتوله برزیلی",
+      "subspecies": [
+        {
+          "id": "88f260ba-1d56-450c-9872-160b5c138528",
+          "key": "fischer",
+          "displayName": "فیشر"
+        },
+        {
+          "id": "d8da3a49-ab70-4ec8-9df7-f116e616b305",
+          "key": "rosy-faced",
+          "displayName": "رزیکولیس"
+        }
+      ]
+    }
+  ]
+}
