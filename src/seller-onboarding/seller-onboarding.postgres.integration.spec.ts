@@ -34,6 +34,7 @@ describeDatabase('Seller onboarding real PostgreSQL integration', () => {
   let source: DataSource;
   let forwardMigration: string;
   let rollbackMigration: string;
+  let currentOnboardingMigrations: string[];
   let databaseCreated = false;
 
   beforeAll(async () => {
@@ -81,6 +82,20 @@ describeDatabase('Seller onboarding real PostgreSQL integration', () => {
           'scripts/migrations/20260926-create-seller-onboarding-v1.sql',
         ),
         'utf8',
+      ),
+    );
+    // Explicit dependencies: listing foundation -> seller revocation -> reverification.
+    // The lifecycle migration supplies seller revokedAt/By/Reason required by
+    // the current entities before the reverification constraints are installed.
+    currentOnboardingMigrations = await Promise.all(
+      [
+        '20261003-create-parrot-sale-listings-v1.sql',
+        '20261009-add-parrot-sale-listing-lifecycle-v1.sql',
+        '20261019-add-seller-breeder-reverification-v1.sql',
+      ].map(async (name) =>
+        stripPsqlDirective(
+          await readFile(resolve('scripts/migrations', name), 'utf8'),
+        ),
       ),
     );
     rollbackMigration = stripPsqlDirective(
@@ -207,7 +222,8 @@ describeDatabase('Seller onboarding real PostgreSQL integration', () => {
   });
 
   it('rolls back a pristine onboarding schema safely', async () => {
-    await applyForward();
+    // This rollback predates the later forward-only lifecycle migrations.
+    await applyForward(true);
     await executeMigration(rollbackMigration);
     const [state] = await source.query<
       Array<{
@@ -571,6 +587,10 @@ describeDatabase('Seller onboarding real PostgreSQL integration', () => {
       "createdAt" timestamptz NOT NULL DEFAULT now(),
       "updatedAt" timestamptz NOT NULL DEFAULT now()
     )`);
+    // Minimal Product prerequisite; only deployed SQL creates listing dependencies.
+    await source.query(`CREATE TABLE public.products (
+      id uuid PRIMARY KEY DEFAULT public.uuid_generate_v4()
+    )`);
     await source.query(`CREATE TABLE public.otps (
       id uuid PRIMARY KEY DEFAULT public.uuid_generate_v4(),
       phone varchar NOT NULL,
@@ -582,8 +602,16 @@ describeDatabase('Seller onboarding real PostgreSQL integration', () => {
     )`);
   }
 
-  async function applyForward() {
+  async function applyForward(originalSchemaOnly = false) {
     await executeMigration(forwardMigration);
+    // Retain original migration/index assertions before installing later changes.
+    await expectDatabaseObjects(true);
+    if (originalSchemaOnly) return;
+    for (const sql of currentOnboardingMigrations) await executeMigration(sql);
+    // Every service test must start with the complete current onboarding contract.
+    await expectEntityColumns(SellerVerification);
+    await expectEntityColumns(BreederApplication);
+    await expectDatabaseObjects();
   }
 
   async function executeMigration(sql: string) {
@@ -645,7 +673,7 @@ describeDatabase('Seller onboarding real PostgreSQL integration', () => {
     });
   }
 
-  async function expectDatabaseObjects() {
+  async function expectDatabaseObjects(originalSchemaOnly = false) {
     const constraints = await source.query<
       Array<{ name: string; kind: string }>
     >(
@@ -684,16 +712,48 @@ describeDatabase('Seller onboarding real PostgreSQL integration', () => {
       'UQ_breeder_applications_active_user',
     ])
       expect(indexes.some((index) => index.name === name)).toBe(true);
-    expect(
-      indexes.find(
-        (index) => index.name === 'UQ_seller_verifications_active_user',
-      )?.definition,
-    ).toContain('WHERE (status = ANY');
-    expect(
-      indexes.find(
-        (index) => index.name === 'UQ_breeder_applications_active_user',
-      )?.definition,
-    ).toContain('WHERE (status = ANY');
+    if (originalSchemaOnly) {
+      expect(
+        indexes.find(
+          (index) => index.name === 'UQ_seller_verifications_active_user',
+        )?.definition,
+      ).toContain('WHERE (status = ANY');
+      expect(
+        indexes.find(
+          (index) => index.name === 'UQ_breeder_applications_active_user',
+        )?.definition,
+      ).toContain('WHERE (status = ANY');
+    } else {
+      for (const name of [
+        'CHK_seller_verifications_revocation',
+        'CHK_seller_verifications_reverification',
+        'CHK_seller_reapplication_grant',
+        'CHK_breeder_applications_reverification',
+      ])
+        expect(constraints).toContainEqual({ name, kind: 'c' });
+      for (const name of [
+        'UQ_seller_verifications_active_user',
+        'UQ_breeder_applications_active_user',
+      ]) {
+        const definition = indexes.find(
+          (index) => index.name === name,
+        )?.definition;
+        expect(definition).toContain('CREATE UNIQUE INDEX');
+        expect(definition).toContain('("userId")');
+        expect(definition).toContain(' OR ');
+        expect(definition).toContain('"revokedAt" IS NULL');
+      }
+      const triggers = await source.query<Array<{ table: string }>>(
+        `SELECT c.relname AS "table" FROM pg_trigger t
+         JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+         WHERE n.nspname='public' AND t.tgname='TRG_onboarding_reverification_history'
+           AND NOT t.tgisinternal AND t.tgenabled='O' ORDER BY c.relname`,
+      );
+      expect(triggers).toEqual([
+        { table: 'breeder_applications' },
+        { table: 'seller_verifications' },
+      ]);
+    }
   }
 
   function onboardingService() {
